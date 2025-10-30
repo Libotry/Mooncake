@@ -8,6 +8,11 @@ ErrorCode MasterViewHelper::ConnectToEtcd(const std::string& etcd_endpoints) {
     return EtcdHelper::ConnectToEtcdStoreClient(etcd_endpoints);
 }
 
+// Get the master view key using the configured prefix
+std::string MasterViewHelper::GetMasterViewKey() const {
+    return etcd_prefix_ + "/master_view";
+}
+
 void MasterViewHelper::ElectLeader(const std::string& master_address,
                                    ViewVersionId& version,
                                    EtcdLeaseId& lease_id) {
@@ -15,7 +20,8 @@ void MasterViewHelper::ElectLeader(const std::string& master_address,
         // Check if there is already a leader
         ViewVersionId current_version = 0;
         std::string current_master;
-        auto ret = EtcdHelper::Get(MASTER_VIEW_KEY, strlen(MASTER_VIEW_KEY),
+        auto master_key = GetMasterViewKey();
+        auto ret = EtcdHelper::Get(master_key.c_str(), master_key.size(),
                                    current_master, current_version);
         if (ret != ErrorCode::OK && ret != ErrorCode::ETCD_KEY_NOT_EXIST) {
             LOG(ERROR) << "Failed to get current leader: " << ret;
@@ -27,8 +33,9 @@ void MasterViewHelper::ElectLeader(const std::string& master_address,
             // In rare cases, the leader may be ourselves, but it does not
             // matter. We will watch the key until it's deleted.
             LOG(INFO) << "Waiting for leadership change...";
-            auto ret = EtcdHelper::WatchUntilDeleted(MASTER_VIEW_KEY,
-                                                     strlen(MASTER_VIEW_KEY));
+                auto master_key = GetMasterViewKey();
+                auto ret = EtcdHelper::WatchUntilDeleted(master_key.c_str(),
+                                                         master_key.size());
             if (ret != ErrorCode::OK) {
                 LOG(ERROR) << "Etcd error when waiting for leadership change: "
                            << ret;
@@ -51,8 +58,9 @@ void MasterViewHelper::ElectLeader(const std::string& master_address,
             continue;
         }
 
+        auto master_key = GetMasterViewKey();
         ret = EtcdHelper::CreateWithLease(
-            MASTER_VIEW_KEY, strlen(MASTER_VIEW_KEY), master_address.c_str(),
+            master_key.c_str(), master_key.size(), master_address.c_str(),
             master_address.size(), lease_id, version);
         if (ret == ErrorCode::ETCD_TRANSACTION_FAIL) {
             LOG(INFO) << "Failed to elect self as leader: " << ret;
@@ -75,7 +83,8 @@ void MasterViewHelper::KeepLeader(EtcdLeaseId lease_id) {
 
 ErrorCode MasterViewHelper::GetMasterView(std::string& master_address,
                                           ViewVersionId& version) {
-    auto err_code = EtcdHelper::Get(MASTER_VIEW_KEY, strlen(MASTER_VIEW_KEY),
+    auto master_key = GetMasterViewKey();
+    auto err_code = EtcdHelper::Get(master_key.c_str(), master_key.size(),
                                     master_address, version);
     if (err_code != ErrorCode::OK) {
         if (err_code == ErrorCode::ETCD_KEY_NOT_EXIST) {
@@ -107,7 +116,7 @@ int MasterServiceSupervisor::Start() {
         }
 
         LOG(INFO) << "Init leader election helper...";
-        MasterViewHelper mv_helper;
+        MasterViewHelper mv_helper(config_.etcd_prefix);
         if (mv_helper.ConnectToEtcd(config_.etcd_endpoints) != ErrorCode::OK) {
             LOG(ERROR) << "Failed to connect to etcd endpoints: "
                        << config_.etcd_endpoints;

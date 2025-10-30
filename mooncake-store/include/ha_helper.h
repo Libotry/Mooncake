@@ -12,8 +12,11 @@
 
 namespace mooncake {
 
-// The key to store the master view in etcd
-inline const char* const MASTER_VIEW_KEY = "mooncake-store/master_view";
+// Default prefix for etcd keys
+inline const char* const DEFAULT_ETCD_PREFIX = "mooncake-store";
+
+// Get the master view key using the configured prefix
+std::string GetMasterViewKey() const;
 
 /*
  * @brief A helper class for maintain and monitor the master view change.
@@ -26,7 +29,21 @@ class MasterViewHelper {
    public:
     MasterViewHelper(const MasterViewHelper&) = delete;
     MasterViewHelper& operator=(const MasterViewHelper&) = delete;
-    MasterViewHelper() = default;
+    
+    /*
+     * @brief Constructor with optional etcd prefix.
+     * @param etcd_prefix: The prefix for etcd keys, defaults to DEFAULT_ETCD_PREFIX.
+     */
+    explicit MasterViewHelper(const std::string& etcd_prefix = DEFAULT_ETCD_PREFIX)
+        : etcd_prefix_(etcd_prefix) {}
+    
+    /*
+     * @brief Set the etcd prefix after initialization.
+     * @param prefix: The new prefix to use.
+     */
+    void SetEtcdPrefix(const std::string& prefix) {
+        etcd_prefix_ = prefix;
+    }
 
     /*
      * @brief Connect to the etcd cluster. This function should be called at
@@ -61,6 +78,10 @@ class MasterViewHelper {
      */
     ErrorCode GetMasterView(std::string& master_address,
                             ViewVersionId& version);
+    
+   private:
+    // The prefix for etcd keys to support multi-tenancy
+    std::string etcd_prefix_;
 };
 
 /*

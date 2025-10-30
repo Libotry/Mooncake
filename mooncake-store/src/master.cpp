@@ -64,6 +64,9 @@ DEFINE_bool(enable_ha, false,
 DEFINE_string(
     etcd_endpoints, "",
     "Endpoints of ETCD server, separated by semicolon, required in HA mode");
+DEFINE_string(
+    etcd_prefix, "mooncake-store",
+    "Etcd prefix for key paths, used for multi-tenant isolation");
 DEFINE_int64(client_ttl, mooncake::DEFAULT_CLIENT_LIVE_TTL_SEC,
              "How long a client is considered alive after the last ping, only "
              "used in HA mode");
@@ -141,6 +144,9 @@ void InitMasterConf(const mooncake::DefaultConfig& default_config,
     default_config.GetString("http_metadata_server_host",
                              &master_config.http_metadata_server_host,
                              FLAGS_http_metadata_server_host);
+    
+    // Initialize etcd prefix for HA mode
+    default_config.GetString("etcd_prefix", &master_config.etcd_prefix, "mooncake-store");
 }
 
 void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
@@ -291,6 +297,12 @@ void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
         !conf_set) {
         master_config.http_metadata_server_host =
             FLAGS_http_metadata_server_host;
+    }
+    // Handle etcd prefix configuration
+    if ((google::GetCommandLineFlagInfo("etcd_prefix", &info) &&
+         !info.is_default) ||
+        !conf_set) {
+        master_config.etcd_prefix = FLAGS_etcd_prefix;
     }
 }
 

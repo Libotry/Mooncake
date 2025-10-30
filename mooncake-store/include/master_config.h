@@ -27,6 +27,7 @@ struct MasterConfig {
 
     bool enable_ha;
     std::string etcd_endpoints;
+    std::string etcd_prefix;
 
     std::string cluster_id;
     std::string root_fs_dir;
@@ -60,6 +61,7 @@ class MasterServiceSupervisorConfig {
         0);  // Client connection timeout. 0 = no timeout (infinite)
     bool rpc_enable_tcp_no_delay = true;
     std::string etcd_endpoints = "0.0.0.0:2379";
+    std::string etcd_prefix = "mooncake-store";
     std::string local_hostname = "0.0.0.0:50051";
     std::string cluster_id = DEFAULT_CLUSTER_ID;
     std::string root_fs_dir = DEFAULT_ROOT_FS_DIR;
@@ -88,6 +90,7 @@ class MasterServiceSupervisorConfig {
             std::chrono::seconds(config.rpc_conn_timeout_seconds);
         rpc_enable_tcp_no_delay = config.rpc_enable_tcp_no_delay;
         etcd_endpoints = config.etcd_endpoints;
+        etcd_prefix = config.etcd_prefix;
         local_hostname = rpc_address + ":" + std::to_string(rpc_port);
         cluster_id = config.cluster_id;
         root_fs_dir = config.root_fs_dir;
