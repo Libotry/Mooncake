@@ -1,0 +1,108 @@
+@startuml hot-standby-architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title 热备模式 - 完整架构图
+
+' ===== 样式定义 =====
+skinparam component {
+    BackgroundColor<<primary>> #90EE90
+    BackgroundColor<<standby>> #FFE4B5
+    BackgroundColor<<client>> #87CEEB
+}
+
+' ===== Master 集群 =====
+package "Master 集群 (HA)" as MasterCluster #F5F5F5 {
+    
+    package "Primary Master (Leader)" as PrimaryPkg <<primary>> {
+        component [MasterService\n(元数据管理)] as PrimaryMS #90EE90
+        component [OpLogManager\n(生成 & 缓冲)] as OpLogMgr #98FB98
+        component [ReplicationService\n(推送到 Standby)] as RepSvc #98FB98
+        component [核查处理器\n(处理核查请求)] as VerifyHandler #98FB98
+        
+        PrimaryMS -down-> OpLogMgr : 1. 写操作\n生成 OpLog
+        OpLogMgr -right-> RepSvc : 2. 新条目\n通知
+        VerifyHandler -up-> PrimaryMS : 查询数据\n用于核查
+    }
+    
+    package "Standby Master 1 (热备节点)" as Standby1Pkg <<standby>> {
+        component [HotStandbyService\n(核心服务)] as HotStandby1 #FFE4B5
+        component [OpLogApplier\n(应用变更)] as Applier1 #FFDAB9
+        component [MetadataStore\n(副本数据)] as StandbyMeta1 #FFDAB9
+        component [核查客户端\n(定期检查)] as VerifyClient1 #FFDAB9
+        
+        HotStandby1 -down-> Applier1 : 3. 转发\nOpLog
+        Applier1 -down-> StandbyMeta1 : 4. 应用\n变更
+        VerifyClient1 -left-> StandbyMeta1 : 读取用于\n核查
+    }
+    
+    package "Standby Master 2 (热备节点)" as Standby2Pkg <<standby>> {
+        component [HotStandbyService] as HotStandby2 #FFE4B5
+        component [MetadataStore] as StandbyMeta2 #FFDAB9
+    }
+}
+
+' ===== 复制连接 =====
+RepSvc -down-> HotStandby1 : **gRPC 流**\n实时 OpLog 推送
+RepSvc -down-> HotStandby2 : **gRPC 流**\n实时 OpLog 推送
+
+' ===== 核查连接 =====
+VerifyClient1 -up-> VerifyHandler : **定期核查**\n{prefix_hash, checksum}
+
+' ===== etcd 集群 =====
+database "etcd 集群" as etcd #E6E6FA {
+    [Leader 选举\n/mooncake/master/leader] as LeaderKey
+    [服务发现\n/mooncake/master/view] as ViewKey
+}
+
+PrimaryMS -down-> etcd : 租约续约\n(TTL=5s)
+HotStandby1 -down-> etcd : 监听 Leader Key
+HotStandby2 -down-> etcd : 监听 Leader Key
+
+' ===== 客户端 =====
+package "vLLM 推理集群" <<client>> #E0FFFF {
+    [vLLM 实例 1] as vLLM1
+    [vLLM 实例 2] as vLLM2
+    [vLLM 实例 N] as vLLMN
+}
+
+vLLM1 -up-> PrimaryMS : RPC\n(Query/Put/Remove)
+vLLM2 -up-> PrimaryMS : RPC
+vLLMN -up-> PrimaryMS : RPC
+
+' ===== 说明 =====
+note right of PrimaryPkg
+  **Primary 职责:**
+  • 处理所有客户端请求
+  • 为写操作生成 OpLog
+  • 广播 OpLog 到 Standby
+  • 响应核查请求
+end note
+
+note right of Standby1Pkg
+  **Standby 职责:**
+  • 接收 & 应用 OpLog
+  • 维护副本元数据
+  • 定期核查
+  • 随时准备提升
+end note
+
+' ===== 图例 =====
+legend bottom
+  |= 组件 |= 描述 |
+  | <#90EE90> Primary | 处理请求的活跃 leader |
+  | <#FFE4B5> Standby | 拥有副本数据的热备节点 |
+  | <#E6E6FA> etcd | 协调 & leader 选举 |
+  | <#87CEEB> 客户端 | vLLM 推理实例 |
+endlegend
+
+@enduml
+
+
+
+
+
+
+
+

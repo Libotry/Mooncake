@@ -1,0 +1,159 @@
+@startuml state-machine
+!theme plain
+skinparam state {
+    BackgroundColor<<leader>> #90EE90
+    BackgroundColor<<follower>> #FFE4B5
+    BackgroundColor<<candidate>> #87CEEB
+    BackgroundColor<<error>> #FFB6C1
+}
+
+title Master Node State Machine (Hot Standby Mode)
+
+[*] --> INITIALIZING : Node starts
+
+state INITIALIZING {
+    [*] --> LoadConfig
+    LoadConfig : Load configuration
+    LoadConfig --> ConnectEtcd
+    ConnectEtcd : Connect to etcd cluster
+    ConnectEtcd --> CheckLeader
+    CheckLeader : Check if leader exists
+    CheckLeader --> [*]
+}
+
+INITIALIZING --> FOLLOWER : Leader exists
+INITIALIZING --> CANDIDATE : No leader,\nattempt election
+
+state FOLLOWER <<follower>> {
+    [*] --> ConnectPrimary
+    
+    ConnectPrimary : Connect to Primary
+    ConnectPrimary --> Syncing : Connected
+    ConnectPrimary --> WaitingLeader : Connection failed
+    
+    state Syncing {
+        [*] --> ReceiveOpLog
+        ReceiveOpLog : Receive OpLog stream
+        ReceiveOpLog --> ApplyOpLog : Entry received
+        ApplyOpLog : Apply to MetadataStore
+        ApplyOpLog --> ReceiveOpLog
+        
+        ReceiveOpLog --> Verify : Timer triggers
+        Verify : Run verification
+        Verify --> ReceiveOpLog : OK
+        Verify --> Repair : Mismatch
+        Repair : Apply corrections
+        Repair --> ReceiveOpLog
+        Verify --> FullSync : Need full sync
+    }
+    
+    WaitingLeader : Watch for leader
+    WaitingLeader --> ConnectPrimary : Leader appeared
+    
+    Syncing --> WaitingLeader : Primary disconnected
+    
+    state FullSync {
+        [*] --> RequestDump
+        RequestDump : Request metadata dump
+        RequestDump --> ReceiveChunks
+        ReceiveChunks : Receive & apply chunks
+        ReceiveChunks --> ReceiveChunks : More chunks
+        ReceiveChunks --> [*] : Complete
+    }
+    
+    FullSync --> Syncing : Sync complete
+}
+
+FOLLOWER --> CANDIDATE : Leader key deleted\n&& ready for promotion
+
+state CANDIDATE <<candidate>> {
+    [*] --> CheckReadiness
+    
+    CheckReadiness : Verify promotion eligibility
+    CheckReadiness --> AttemptElection : Ready
+    CheckReadiness --> [*] : Not ready (decline)
+    
+    AttemptElection : Create leader key\n(etcd transaction)
+    AttemptElection --> WaitSafetyWindow : Success
+    AttemptElection --> [*] : Failed
+    
+    WaitSafetyWindow : Wait for old lease TTL\n(prevent split-brain)
+    WaitSafetyWindow --> [*] : Window passed
+}
+
+CANDIDATE --> LEADER : Election won +\nsafety window passed
+CANDIDATE --> FOLLOWER : Election lost
+
+state LEADER <<leader>> {
+    [*] --> Promote
+    
+    Promote : MetadataStore → MasterService
+    Promote --> InitServices
+    
+    InitServices : Start ReplicationService\nStart VerificationHandler
+    InitServices --> StartRpc
+    
+    StartRpc : Start RPC server
+    StartRpc --> Serving
+    
+    state Serving {
+        [*] --> HandleRequests
+        HandleRequests : Process client RPCs
+        HandleRequests --> GenerateOpLog : Write operation
+        GenerateOpLog : Create OpLog entry
+        GenerateOpLog --> BroadcastOpLog
+        BroadcastOpLog : Push to Standbys
+        BroadcastOpLog --> HandleRequests
+        
+        HandleRequests --> HandleVerify : Verify request
+        HandleVerify : Respond to Standby
+        HandleVerify --> HandleRequests
+    }
+    
+    Serving --> [*] : Shutdown requested
+}
+
+LEADER --> FOLLOWER : Lost etcd lease\n(failed KeepAlive)
+
+state ERROR <<error>> {
+    [*] --> Diagnose
+    Diagnose : Identify error type
+    Diagnose --> [*]
+}
+
+FOLLOWER --> ERROR : Severe error\n(data corruption)
+ERROR --> FOLLOWER : Manual recovery\nor restart
+
+note right of LEADER
+  **Leader Responsibilities:**
+  • Accept all client requests
+  • Generate OpLog for writes
+  • Broadcast to Standbys
+  • Handle verification requests
+  • Maintain etcd lease
+end note
+
+note right of FOLLOWER
+  **Follower Responsibilities:**
+  • Receive & apply OpLog
+  • Maintain metadata replica
+  • Periodic verification
+  • Ready for quick promotion
+end note
+
+note bottom of CANDIDATE
+  **Promotion Eligibility:**
+  • applied_seq within threshold
+  • Verification healthy
+  • No ongoing full sync
+end note
+
+@enduml
+
+
+
+
+
+
+
+

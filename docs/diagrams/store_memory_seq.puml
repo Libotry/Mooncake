@@ -1,0 +1,42 @@
+@startuml
+title Store Memory Management - Sequence
+
+actor Client
+participant Master
+participant "SegmentManager / Allocators" as SegmentMgr
+participant Allocator
+participant TransferEngine
+
+Client -> Master: PutStart(key, slices)
+Master -> SegmentMgr: Allocate slices
+SegmentMgr -> Allocator: allocate(size)
+Allocator --> SegmentMgr: AllocatedBuffer
+SegmentMgr --> Master: Replica (PROCESSING)
+Master --> Client: Replica::Descriptor(endpoint, addr, size)
+
+Client -> TransferEngine: submit writes (using descriptors)
+alt transfer to local allocator
+  TransferEngine -> Allocator: write to buffer_address
+else client memcpy
+  Client -> Allocator: memcpy to buffer_address
+end
+
+Client -> Master: PutEnd(key)
+Master -> Master: mark COMPLETE; GrantLease
+
+Client -> Master: GetReplicaList(key) [read]
+Master --> Client: descriptors
+Client -> Allocator: read from buffer_address
+Master -> Master: extend lease
+
+note over Master: Later, system triggers eviction
+System -> Master: BatchEvict()
+Master -> Master: collect candidates (per-shard)
+Master -> Master: nth_element to get threshold
+Master -> Master: remove selected replicas from metadata
+Master -> Replica: destructor
+Replica -> AllocatedBuffer: destroy
+AllocatedBuffer -> Allocator: allocator->deallocate(this)
+Allocator --> System: memory reclaimed
+
+@enduml

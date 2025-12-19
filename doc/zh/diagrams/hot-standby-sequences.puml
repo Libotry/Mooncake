@@ -1,0 +1,88 @@
+@startuml verification-sequence
+!theme plain
+title 数据核查机制详细流程
+
+participant "Standby Master" as Standby
+participant "Verification\nClient" as VerifyClient
+participant "Primary Master" as Primary
+participant "Verification\nHandler" as VerifyHandler
+database "Standby\nMetadata" as StandbyDB
+database "Primary\nMetadata" as PrimaryDB
+
+== 定时核查流程 (每 30 秒触发) ==
+
+Standby -> VerifyClient : 触发核查
+activate VerifyClient
+
+VerifyClient -> VerifyClient : 1. 选择待核查 Shard\n(轮询策略, 每轮10%)
+
+loop 对每个选中的 Shard
+    VerifyClient -> StandbyDB : 2. 采样该 Shard 的 Keys\n(最多100个)
+    activate StandbyDB
+    StandbyDB --> VerifyClient : 返回 [{key, metadata}...]
+    deactivate StandbyDB
+    
+    VerifyClient -> VerifyClient : 3. 计算核查信息:\n  for each (key, meta):\n    prefix_hash = CRC32(key[0:8])\n    checksum = CRC32(serialize(meta))
+end
+
+VerifyClient -> Primary : 4. VerificationRequest {\n  shard_ids: [12, 45, 78],\n  entries: [\n    {prefix_hash: 0xABCD1234, checksum: 0x12345678},\n    {prefix_hash: 0xEF012345, checksum: 0x87654321},\n    ...\n  ],\n  standby_seq_id: 10234\n}
+activate Primary
+
+Primary -> VerifyHandler : 处理核查请求
+activate VerifyHandler
+
+VerifyHandler -> VerifyHandler : 5. 检查 seq_id 差距\n(如果差距 > 阈值, 返回 NEED_FULL_SYNC)
+
+loop 对每个 prefix_hash
+    VerifyHandler -> PrimaryDB : 6. 根据 prefix_hash\n查找匹配的 keys
+    activate PrimaryDB
+    PrimaryDB --> VerifyHandler : 返回匹配的 metadata
+    deactivate PrimaryDB
+    
+    VerifyHandler -> VerifyHandler : 7. 计算本地 checksum\n并与请求中的比对
+    
+    alt checksum 不匹配
+        VerifyHandler -> VerifyHandler : 记录到 mismatches 列表
+    end
+end
+
+deactivate VerifyHandler
+
+alt 所有数据一致
+    Primary --> VerifyClient : VerificationResponse {\n  status: OK,\n  mismatches: [],\n  primary_seq_id: 10235\n}
+else 存在不一致
+    Primary --> VerifyClient : VerificationResponse {\n  status: MISMATCH,\n  mismatches: [\n    {key: "prefix:xxx", correct_meta: ...},\n    ...\n  ],\n  primary_seq_id: 10235\n}
+else seq_id 差距过大
+    Primary --> VerifyClient : VerificationResponse {\n  status: NEED_FULL_SYNC,\n  snapshot_url: "s3://..."\n}
+end
+
+deactivate Primary
+
+alt 收到 MISMATCH 响应
+    VerifyClient -> StandbyDB : 8. 修复不一致数据\n(使用 correct_meta 覆盖)
+    VerifyClient -> VerifyClient : 9. 记录告警日志\n"Data inconsistency detected..."
+else 收到 NEED_FULL_SYNC
+    VerifyClient -> Standby : 触发全量同步
+    Standby -> Standby : 从最新快照恢复
+end
+
+VerifyClient --> Standby : 核查完成
+deactivate VerifyClient
+
+note over Standby, Primary
+    核查策略说明:
+    - 每轮核查 10% 的 Shards (约 102 个)
+    - 每个 Shard 最多采样 100 个 Keys
+    - 5 分钟完成全部 Shards 一轮核查
+    - prefix_hash 使用 key 前 8 字节, 加速查找
+end note
+
+@enduml
+
+
+
+
+
+
+
+

@@ -1,0 +1,95 @@
+@startuml Mooncake Store KV Cache 管理流程
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam componentStyle rectangle
+
+title Mooncake Store KV Cache 管理流程
+
+package "Master Service" {
+    component "Metadata Store" as MS {
+        [ObjectMetadata] as OM
+        [Replica Info] as RI
+        [Lease Info] as LI
+    }
+    
+    component "Allocation Strategy" as AS {
+        [RandomAllocationStrategy] as RAS
+        [Segment Selection] as SS
+    }
+    
+    component "Eviction Manager" as EM {
+        [Eviction Thread] as ET
+        [Batch Evict] as BE
+        [Lease Check] as LC
+    }
+    
+    component "Client Monitor" as CM {
+        [Heartbeat Monitor] as HM
+        [Segment Status] as SS2
+    }
+}
+
+package "Client Segments" {
+    component "Segment 1" as S1 {
+        [AllocatedBuffer] as AB1
+        [BufferAllocator] as BA1
+    }
+    
+    component "Segment 2" as S2 {
+        [AllocatedBuffer] as AB2
+        [BufferAllocator] as BA2
+    }
+    
+    component "Segment 3" as S3 {
+        [AllocatedBuffer] as AB3
+        [BufferAllocator] as BA3
+    }
+}
+
+' 元数据管理
+MS --> OM : 存储对象元数据
+OM --> RI : 关联 Replica 信息
+OM --> LI : 管理 Lease 信息
+
+' 空间分配
+AS --> MS : 查询可用空间
+AS --> SS : 选择 Segment
+SS --> S1 : 分配 Buffer
+SS --> S2 : 分配 Buffer
+SS --> S3 : 分配 Buffer
+
+' 驱逐管理
+EM --> MS : 检查对象状态
+ET --> BE : 触发批量驱逐
+BE --> LC : 检查 Lease 过期
+LC --> MS : 标记可驱逐对象
+BE --> S1 : EraseReplica
+BE --> S2 : EraseReplica
+BE --> S3 : EraseReplica
+
+' 客户端监控
+CM --> HM : 心跳检测
+HM --> SS2 : 更新 Segment 状态
+SS2 --> MS : 清理失效 Replica
+
+' 内存管理
+AB1 --> BA1 : weak_ptr 引用
+AB2 --> BA2 : weak_ptr 引用
+AB3 --> BA3 : weak_ptr 引用
+
+note right of AB1
+    当 Segment 卸载时：
+    - BufferAllocator 被销毁
+    - weak_ptr 失效
+    - Master 检测到失效
+end note
+
+@enduml
+
+
+
+
+
+
+

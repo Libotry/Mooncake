@@ -1,0 +1,100 @@
+@startuml verification-flow
+!theme plain
+title Data Verification Mechanism
+
+participant "Standby\nVerificationClient" as VerifyClient
+participant "Standby\nMetadataStore" as StandbyDB
+participant "Primary\nVerificationHandler" as VerifyHandler
+participant "Primary\nMetadataStore" as PrimaryDB
+
+== Periodic Verification (Every 30 seconds) ==
+
+VerifyClient -> VerifyClient : 1. Select shards for this round\n(10% = ~102 shards)
+
+loop For each selected shard
+    VerifyClient -> StandbyDB : 2. Sample keys (max 100)
+    activate StandbyDB
+    StandbyDB --> VerifyClient : [{key, metadata}, ...]
+    deactivate StandbyDB
+end
+
+VerifyClient -> VerifyClient : 3. Calculate verification entries
+
+note right of VerifyClient #FFFACD
+  **For each (key, metadata):**
+  
+  prefix_hash = CRC32(key.substr(0, 8))
+  
+  checksum = CRC32(serialize(
+    replicas,    // included
+    size,        // included
+    // lease_timeout - EXCLUDED (dynamic)
+    // soft_pin_timeout - EXCLUDED (dynamic)
+  ))
+end note
+
+VerifyClient -> VerifyHandler : 4. VerifyRequest {\n  shard_ids: [12, 45, 78, ...],\n  entries: [\n    {prefix_hash: 0xAB12, checksum: 0x34CD},\n    {prefix_hash: 0xEF56, checksum: 0x78AB},\n    ...\n  ],\n  standby_seq_id: 10234\n}
+activate VerifyHandler
+
+VerifyHandler -> VerifyHandler : 5. Check sequence gap
+
+alt Sequence gap too large (> 1000)
+    VerifyHandler --> VerifyClient : VerifyResponse {\n  status: NEED_FULL_SYNC\n}
+else Sequence gap acceptable
+    loop For each prefix_hash
+        VerifyHandler -> PrimaryDB : Find matching keys
+        activate PrimaryDB
+        PrimaryDB --> VerifyHandler : matching metadata
+        deactivate PrimaryDB
+        
+        VerifyHandler -> VerifyHandler : Calculate local checksum\nand compare
+        
+        alt Checksum mismatch
+            VerifyHandler -> VerifyHandler : Record mismatch
+        end
+    end
+    
+    alt All checksums match
+        VerifyHandler --> VerifyClient : VerifyResponse {\n  status: OK,\n  primary_seq_id: 10236\n}
+    else Mismatches found
+        VerifyHandler --> VerifyClient : VerifyResponse {\n  status: MISMATCH,\n  mismatches: [\n    {key: "x", correct: <data>},\n    ...\n  ],\n  primary_seq_id: 10236\n}
+    end
+end
+
+deactivate VerifyHandler
+
+== Handle Verification Response ==
+
+alt status == OK
+    VerifyClient -> VerifyClient : Log success,\nupdate metrics
+    
+else status == MISMATCH && count < threshold
+    VerifyClient -> StandbyDB : 6. Auto-repair:\nUpdate with correct data
+    VerifyClient -> VerifyClient : 7. Log WARNING:\n"Data inconsistency detected"
+    
+else status == MISMATCH && count >= threshold
+    VerifyClient -> VerifyClient : 8. Trigger FULL_SYNC
+    
+else status == NEED_FULL_SYNC
+    VerifyClient -> VerifyClient : 9. Trigger FULL_SYNC
+end
+
+== Full Sync (If Triggered) ==
+
+note over VerifyClient, PrimaryDB #FFE4E4
+  **Full Sync Process:**
+  1. Request full metadata dump from Primary
+  2. Stream chunks (10000 entries each)
+  3. Rebuild local MetadataStore
+  4. Resume OpLog sync from checkpoint seq_id
+end note
+
+@enduml
+
+
+
+
+
+
+
+

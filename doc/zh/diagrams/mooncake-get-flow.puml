@@ -1,0 +1,68 @@
+@startuml Mooncake Store Get 操作流程
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+
+title Mooncake Store Get 操作流程
+
+actor "应用" as App
+participant "Client" as Client
+participant "Master Service" as Master
+participant "Transfer Engine" as TE
+participant "Source Client\n(Segment)" as Source
+participant "SSD" as SSD
+
+== Get 操作流程 ==
+
+App -> Client: Get(key, slices)
+
+activate Client
+
+Client -> Master: GetReplicaList(key)
+activate Master
+
+Master -> Master: 查询 Metadata
+alt 对象存在
+    Master --> Client: 返回 Replica Descriptors\n(包含所有副本信息)
+    deactivate Master
+    
+    Client -> Client: 选择可用的 Replica\n(优先选择 COMPLETE 状态)
+    Client -> TE: TransferRead(replica, slices)
+    activate TE
+    
+    TE -> TE: 选择传输策略
+    alt 本地传输
+        TE -> Client: memcpy
+    else 远程传输
+        TE -> Source: RDMA/TCP Read\n(零拷贝)
+        activate Source
+        Source -> Source: 从内存读取
+        Source --> TE: 返回数据
+        deactivate Source
+    end
+    
+    TE --> Client: 传输完成
+    deactivate TE
+    
+    Client --> App: 返回数据
+    
+else 对象不存在
+    alt 启用持久化
+        Master --> Client: OBJECT_NOT_FOUND
+        deactivate Master
+        Client -> SSD: 从 SSD 加载
+        activate SSD
+        SSD --> Client: 返回数据
+        deactivate SSD
+        Client --> App: 返回数据
+    else
+        Master --> Client: OBJECT_NOT_FOUND
+        deactivate Master
+        Client --> App: 错误
+    end
+end
+
+deactivate Client
+
+@enduml
+

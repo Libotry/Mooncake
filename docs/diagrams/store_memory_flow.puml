@@ -1,0 +1,46 @@
+@startuml
+title Store Memory Management - Flow (sequence view)
+
+participant Client
+participant Master
+participant "SegmentManager" as SegmentMgr
+participant Allocator
+participant TransferEngine
+participant System
+
+Client -> Master: PutStart(key, slice_lengths)\n(prepare object key and slices)
+note right of Master: Master 调用 AllocationStrategy::Allocate
+Master -> SegmentMgr: Choose allocators
+SegmentMgr -> Allocator: allocate(size)
+Allocator --> SegmentMgr: AllocatedBuffer
+SegmentMgr --> Master: Replica (PROCESSING)
+Master --> Client: Replica::Descriptor (endpoint, addr, size)
+
+alt local write
+  Client -> Allocator: memcpy to buffer_address
+else remote write
+  Client -> TransferEngine: submitTransfer(descriptor)
+  TransferEngine -> Allocator: write to buffer_address
+end
+
+Client -> Master: PutEnd(key)
+Master -> Master: mark Replica COMPLETE; GrantLease
+
+opt Read
+  Client -> Master: GetReplicaList(key)
+  Master --> Client: descriptors
+  Client -> Allocator: read via descriptor
+  Master -> Master: extend lease on read
+end
+
+opt Eviction Trigger
+  System -> Master: BatchEvict()
+  Master -> Master: select candidates (nth_element threshold)
+  Master -> Master: EraseReplica / Erase ObjectMetadata
+  note right of Master: Replica holds unique_ptr<AllocatedBuffer>
+  Master -> Allocator: Replica destructor -> AllocatedBuffer::~AllocatedBuffer()
+  AllocatedBuffer -> Allocator: allocator->deallocate(this)
+  Allocator --> System: free memory & update metrics
+end
+
+@enduml

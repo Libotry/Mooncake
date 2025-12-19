@@ -1,0 +1,160 @@
+@startuml hot-standby-architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title Hot Standby Mode - Complete Architecture
+
+' ===== Style Definitions =====
+skinparam component {
+    BackgroundColor<<primary>> #90EE90
+    BackgroundColor<<standby>> #FFE4B5
+    BackgroundColor<<client>> #87CEEB
+}
+
+' ===== Master Cluster =====
+package "Master Cluster (HA)" as MasterCluster #F5F5F5 {
+    
+    package "Primary Master (Leader)" as PrimaryPkg <<primary>> {
+        component [MasterService\n(Metadata Management)] as PrimaryMS #90EE90
+        component [OpLogManager\n(Generate & Buffer)] as OpLogMgr #98FB98
+        component [ReplicationService\n(Push to Standbys)] as RepSvc #98FB98
+        component [VerificationHandler\n(Handle Verify Requests)] as VerifyHandler #98FB98
+        
+        PrimaryMS -down-> OpLogMgr : 1. Write op\ngenerates OpLog
+        OpLogMgr -right-> RepSvc : 2. New entry\nnotification
+        VerifyHandler -up-> PrimaryMS : Query data\nfor verification
+    }
+    
+    package "Standby Master 1 (Hot Standby)" as Standby1Pkg <<standby>> {
+        component [HotStandbyService\n(Core Service)] as HotStandby1 #FFE4B5
+        component [OpLogApplier\n(Apply Changes)] as Applier1 #FFDAB9
+        component [MetadataStore\n(Replica Data)] as StandbyMeta1 #FFDAB9
+        component [VerificationClient\n(Periodic Check)] as VerifyClient1 #FFDAB9
+        
+        HotStandby1 -down-> Applier1 : 3. Forward\nOpLog
+        Applier1 -down-> StandbyMeta1 : 4. Apply\nchanges
+        VerifyClient1 -left-> StandbyMeta1 : Read for\nverify
+    }
+    
+    package "Standby Master 2 (Hot Standby)" as Standby2Pkg <<standby>> {
+        component [HotStandbyService] as HotStandby2 #FFE4B5
+        component [MetadataStore] as StandbyMeta2 #FFDAB9
+    }
+}
+
+' ===== Replication Connections =====
+RepSvc -down-> HotStandby1 : **gRPC Stream**\nReal-time OpLog Push
+RepSvc -down-> HotStandby2 : **gRPC Stream**\nReal-time OpLog Push
+
+' ===== Verification Connections =====
+VerifyClient1 -up-> VerifyHandler : **Periodic Verify**\n{prefix_hash, checksum}
+
+' ===== etcd Cluster =====
+database "etcd Cluster" as etcd #E6E6FA {
+    [Leader Election\n/mooncake/master/leader] as LeaderKey
+    [Service Discovery\n/mooncake/master/view] as ViewKey
+}
+
+PrimaryMS -down-> etcd : Lease KeepAlive\n(TTL=5s)
+HotStandby1 -down-> etcd : Watch Leader Key
+HotStandby2 -down-> etcd : Watch Leader Key
+
+' ===== Clients =====
+package "vLLM Inference Cluster" <<client>> #E0FFFF {
+    [vLLM Instance 1] as vLLM1
+    [vLLM Instance 2] as vLLM2
+    [vLLM Instance N] as vLLMN
+}
+
+vLLM1 -up-> PrimaryMS : RPC\n(Query/Put/Remove)
+vLLM2 -up-> PrimaryMS : RPC
+vLLMN -up-> PrimaryMS : RPC
+
+' ===== Notes =====
+note right of PrimaryPkg
+  **Primary Master Responsibilities:**
+  
+  **MasterService:**
+  • Handle all client RPCs (Query/Put/Remove)
+  • Manage authoritative metadata copy
+  • Process space allocation requests
+  
+  **OpLogManager:**
+  • Generate OpLog for every write operation
+  • Assign globally unique sequence IDs
+  • Buffer entries for replication
+  
+  **ReplicationService:**
+  • Push OpLog via gRPC streaming
+  • Track ACKs from each Standby
+  • Monitor replication lag
+  
+  **VerificationHandler:**
+  • Respond to Standby verification requests
+  • Compare checksums and return mismatches
+end note
+
+note right of Standby1Pkg
+  **Standby Master Responsibilities:**
+  
+  **HotStandbyService:**
+  • Manage standby lifecycle
+  • Coordinate replication & verification
+  • Handle promotion to Leader
+  
+  **OpLogApplier:**
+  • Apply OpLog entries in sequence
+  • Maintain consistency with Primary
+  
+  **MetadataStore:**
+  • Complete replica of Primary data
+  • Enables instant failover
+  
+  **VerificationClient:**
+  • Sample local data periodically
+  • Calculate prefix_hash + checksum
+  • Detect and repair inconsistencies
+end note
+
+note bottom of etcd
+  **etcd Coordination:**
+  
+  **Leader Election:**
+  • Lease-based with TTL=5s
+  • Automatic failover on lease expiry
+  • Prevents split-brain via fencing
+  
+  **Service Discovery:**
+  • Stores current master address
+  • Clients watch for changes
+  • Atomic updates on failover
+end note
+
+' ===== Data Flow Description =====
+note as DataFlowNote
+  **Data Flow Summary:**
+  
+  **1. Write Path (numbered in diagram):**
+     Client → MasterService → OpLogManager → ReplicationService → Standbys
+  
+  **2. Verification Path:**
+     Standby samples data → calculates checksum → sends to Primary → repairs if needed
+  
+  **3. Failover Path:**
+     Primary lease expires → etcd notifies Standbys → election → new Leader activates
+end note
+
+' ===== Legend =====
+legend bottom
+  |= Component |= Description |
+  | <#90EE90> Primary | Active leader handling all requests |
+  | <#FFE4B5> Standby | Hot standby with synchronized replica |
+  | <#E6E6FA> etcd | Distributed coordination (election + discovery) |
+  | <#87CEEB> Clients | vLLM inference instances querying metadata |
+  
+  **Key Metrics:** RPO < 1s | RTO < 10s | Replication Lag < 100 entries
+endlegend
+
+@enduml
+

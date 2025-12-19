@@ -1,0 +1,69 @@
+@startuml Mooncake Store Put 操作流程
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+
+title Mooncake Store Put 操作流程
+
+actor "应用" as App
+participant "Client" as Client
+participant "Master Service" as Master
+participant "Allocation Strategy" as AS
+participant "Transfer Engine" as TE
+participant "Target Client\n(Segment)" as Target
+
+== Put 操作流程 ==
+
+App -> Client: Put(key, slices, config)
+
+activate Client
+
+Client -> Master: PutStart(key, slice_lengths, config)
+activate Master
+
+Master -> Master: 检查对象是否存在
+Master -> AS: 分配 Replica 空间
+activate AS
+AS -> AS: 选择 Segment\n(不同 slice 不同 segment)
+AS --> Master: 返回 Replica Descriptors
+deactivate AS
+
+Master --> Client: 返回 Replica Descriptors\n(包含地址和传输端点)
+deactivate Master
+
+note over Client
+    Replica Descriptors 包含：
+    - buffer_address
+    - transport_endpoint
+    - size
+end note
+
+Client -> Client: 处理 Disk Replica\n(如果启用)
+Client -> TE: TransferWrite(replica, slices)
+activate TE
+
+TE -> TE: 选择传输策略\n(LOCAL_MEMCPY / TRANSFER_ENGINE)
+alt 本地传输
+    TE -> Client: memcpy
+else 远程传输
+    TE -> Target: RDMA/TCP Write\n(零拷贝)
+    activate Target
+    Target -> Target: 写入内存
+    Target --> TE: 完成
+    deactivate Target
+end
+
+TE --> Client: 传输完成
+deactivate TE
+
+Client -> Master: PutEnd(key, replica_type)
+activate Master
+Master -> Master: 标记 Replica 为 COMPLETE\n设置 Lease
+Master --> Client: 成功
+deactivate Master
+
+Client --> App: 成功
+
+deactivate Client
+
+@enduml

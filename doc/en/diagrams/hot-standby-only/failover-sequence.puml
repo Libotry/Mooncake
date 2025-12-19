@@ -1,0 +1,148 @@
+@startuml failover-sequence
+!theme plain
+title Failover Sequence Diagram
+
+box "Primary (Failing)" #LightGreen
+    participant "Primary\nMaster" as Primary
+end box
+
+box "etcd Cluster" #LightBlue
+    participant "etcd" as etcd
+end box
+
+box "Standby Nodes" #LightYellow
+    participant "Standby 1\n(Will promote)" as Standby1
+    participant "Standby 2" as Standby2
+end box
+
+box "Clients" #LightGray
+    participant "vLLM\nClients" as Clients
+end box
+
+== Normal Operation ==
+
+Primary -> etcd : KeepAlive (every 2s)
+activate Primary
+etcd --> Primary : Lease renewed
+
+Primary -> Standby1 : OpLog Stream (seq=5000)
+Primary -> Standby2 : OpLog Stream (seq=5000)
+
+Standby1 -> Standby1 : Apply OpLog\napplied_seq=5000
+Standby2 -> Standby2 : Apply OpLog\napplied_seq=5000
+
+Clients -> Primary : Normal requests
+
+== T0: Primary Failure ==
+
+Primary -x Primary : **CRASH**\n(Process dies / Network partition)
+deactivate Primary
+
+note over Primary #FFCCCC
+  Primary stops:
+  • Processing requests
+  • Sending KeepAlive
+  • Pushing OpLog
+end note
+
+== T0 ~ T5s: Failure Detection ==
+
+etcd -> etcd : Wait for lease TTL\n(5 seconds)
+
+note over etcd
+  Lease expires when
+  no KeepAlive received
+  within TTL period
+end note
+
+== T5s: Leader Key Deleted ==
+
+etcd -> etcd : **Lease expired**\nDelete leader key
+
+etcd -> Standby1 : Watch notification:\n"Leader key DELETED"
+etcd -> Standby2 : Watch notification:\n"Leader key DELETED"
+
+activate Standby1
+activate Standby2
+
+== T5s ~ T6s: Election ==
+
+Standby1 -> Standby1 : Check promotion readiness:\n• applied_seq = 5000\n• lag < threshold ✓
+Standby2 -> Standby2 : Check promotion readiness:\n• applied_seq = 5000\n• lag < threshold ✓
+
+par Race to create leader key
+    Standby1 -> etcd : CreateKey(\n  "/mooncake/master/leader",\n  "standby1:port",\n  lease=new_lease\n)
+also
+    Standby2 -> etcd : CreateKey(\n  "/mooncake/master/leader",\n  "standby2:port",\n  lease=new_lease\n)
+end
+
+note over etcd #90EE90
+  etcd transaction ensures
+  only ONE node succeeds
+  (compare-and-swap)
+end note
+
+etcd --> Standby1 : **SUCCESS**\n(Become leader)
+etcd --> Standby2 : **FAILED**\n(Key exists)
+
+Standby2 -> Standby2 : Return to Follower\nWatch new leader
+deactivate Standby2
+
+== T6s ~ T11s: Safety Window ==
+
+Standby1 -> Standby1 : **Wait safety window**\n(5 seconds)
+
+note over Standby1 #FFFACD
+  **Why wait?**
+  • Old Primary may still be running
+    (network partition scenario)
+  • Wait for old lease to fully expire
+  • Prevent split-brain: two leaders
+    accepting writes
+end note
+
+== T11s: Promotion ==
+
+Standby1 -> Standby1 : 1. Validate metadata integrity
+Standby1 -> Standby1 : 2. Promote: MetadataStore → MasterService
+Standby1 -> Standby1 : 3. Initialize ReplicationService
+Standby1 -> Standby1 : 4. Start RPC server
+
+Standby1 -> etcd : Update master view:\n{addr: "standby1:port", version: N+1}
+
+== T11s+: Service Resumed ==
+
+Clients -> etcd : Get master address
+etcd --> Clients : "standby1:port"
+
+Clients -> Standby1 : Resume requests
+
+activate Standby2
+Standby2 -> Standby1 : Connect for replication
+Standby1 --> Standby2 : OpLog stream begins
+deactivate Standby2
+
+note over Standby1, Clients #90EE90
+  **Failover Complete!**
+  
+  Total RTO: ~11 seconds
+  ├─ Lease TTL:      5s
+  ├─ Election:       <1s
+  ├─ Safety window:  5s
+  └─ Activation:     <1s
+  
+  Data loss (RPO): ~1s
+  (Last OpLog batch before crash)
+end note
+
+deactivate Standby1
+
+@enduml
+
+
+
+
+
+
+
+

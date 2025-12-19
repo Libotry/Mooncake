@@ -1,0 +1,148 @@
+@startuml failover-sequence
+!theme plain
+title 故障切换时序图
+
+box "Primary (故障中)" #LightGreen
+    participant "Primary\nMaster" as Primary
+end box
+
+box "etcd 集群" #LightBlue
+    participant "etcd" as etcd
+end box
+
+box "Standby 节点" #LightYellow
+    participant "Standby 1\n(将提升)" as Standby1
+    participant "Standby 2" as Standby2
+end box
+
+box "客户端" #LightGray
+    participant "vLLM\n客户端" as Clients
+end box
+
+== 正常运行 ==
+
+Primary -> etcd : KeepAlive (每 2s)
+activate Primary
+etcd --> Primary : 租约已续约
+
+Primary -> Standby1 : OpLog 流 (seq=5000)
+Primary -> Standby2 : OpLog 流 (seq=5000)
+
+Standby1 -> Standby1 : 应用 OpLog\napplied_seq=5000
+Standby2 -> Standby2 : 应用 OpLog\napplied_seq=5000
+
+Clients -> Primary : 正常请求
+
+== T0: Primary 故障 ==
+
+Primary -x Primary : **崩溃**\n(进程死亡 / 网络分区)
+deactivate Primary
+
+note over Primary #FFCCCC
+  Primary 停止:
+  • 处理请求
+  • 发送 KeepAlive
+  • 推送 OpLog
+end note
+
+== T0 ~ T5s: 故障检测 ==
+
+etcd -> etcd : 等待租约 TTL\n(5 秒)
+
+note over etcd
+  当 TTL 期间内
+  未收到 KeepAlive
+  租约过期
+end note
+
+== T5s: Leader Key 删除 ==
+
+etcd -> etcd : **租约过期**\n删除 leader key
+
+etcd -> Standby1 : Watch 通知:\n"Leader key 已删除"
+etcd -> Standby2 : Watch 通知:\n"Leader key 已删除"
+
+activate Standby1
+activate Standby2
+
+== T5s ~ T6s: 选举 ==
+
+Standby1 -> Standby1 : 检查提升准备状态:\n• applied_seq = 5000\n• 延迟 < 阈值 ✓
+Standby2 -> Standby2 : 检查提升准备状态:\n• applied_seq = 5000\n• 延迟 < 阈值 ✓
+
+par 竞争创建 leader key
+    Standby1 -> etcd : CreateKey(\n  "/mooncake/master/leader",\n  "standby1:port",\n  lease=new_lease\n)
+also
+    Standby2 -> etcd : CreateKey(\n  "/mooncake/master/leader",\n  "standby2:port",\n  lease=new_lease\n)
+end
+
+note over etcd #90EE90
+  etcd 事务保证
+  只有一个节点成功
+  (compare-and-swap)
+end note
+
+etcd --> Standby1 : **成功**\n(成为 leader)
+etcd --> Standby2 : **失败**\n(key 已存在)
+
+Standby2 -> Standby2 : 回到 Follower\n监听新 leader
+deactivate Standby2
+
+== T6s ~ T11s: 安全窗口 ==
+
+Standby1 -> Standby1 : **等待安全窗口**\n(5 秒)
+
+note over Standby1 #FFFACD
+  **为什么等待？**
+  • 旧 Primary 可能仍在运行
+    (网络分区场景)
+  • 等待旧租约完全过期
+  • 防止脑裂: 两个 leader
+    同时接受写入
+end note
+
+== T11s: 提升 ==
+
+Standby1 -> Standby1 : 1. 验证元数据完整性
+Standby1 -> Standby1 : 2. 提升: MetadataStore → MasterService
+Standby1 -> Standby1 : 3. 初始化 ReplicationService
+Standby1 -> Standby1 : 4. 启动 RPC 服务器
+
+Standby1 -> etcd : 更新 master view:\n{addr: "standby1:port", version: N+1}
+
+== T11s+: 服务恢复 ==
+
+Clients -> etcd : 获取 master 地址
+etcd --> Clients : "standby1:port"
+
+Clients -> Standby1 : 恢复请求
+
+activate Standby2
+Standby2 -> Standby1 : 连接进行复制
+Standby1 --> Standby2 : OpLog 流开始
+deactivate Standby2
+
+note over Standby1, Clients #90EE90
+  **故障切换完成！**
+  
+  总 RTO: ~11 秒
+  ├─ 租约 TTL:      5s
+  ├─ 选举:          <1s
+  ├─ 安全窗口:      5s
+  └─ 激活:          <1s
+  
+  数据丢失 (RPO): ~1s
+  (崩溃前的最后一批 OpLog)
+end note
+
+deactivate Standby1
+
+@enduml
+
+
+
+
+
+
+
+

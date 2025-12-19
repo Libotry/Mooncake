@@ -1,0 +1,96 @@
+@startuml Mooncake Store 整体架构图
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam componentStyle rectangle
+
+title Mooncake Store 整体架构图
+
+package "应用层" {
+    [LLM 推理应用] as App
+}
+
+package "Mooncake Store 客户端层" {
+    component "Client" as Client {
+        [MasterClient] as MC
+        [TransferSubmitter] as TS
+        [TransferEngine] as TE
+        [Segment Manager] as SM
+        [Local Buffer] as LB
+    }
+    note right of Client
+        **双重角色**：
+        1. 客户端：发起 Put/Get 请求
+        2. 存储服务器：提供内存存储
+    end note
+}
+
+package "Mooncake Store Master 层" {
+    component "Master Service" as Master {
+        [Metadata Store] as MS
+        [Allocation Strategy] as AS
+        [Eviction Thread] as ET
+        [Client Monitor] as CM
+        [RPC Service] as RPC
+    }
+    note right of Master
+        **核心功能**：
+        - 元数据管理
+        - 空间分配
+        - 驱逐策略
+        - 客户端监控
+    end note
+}
+
+package "存储层" {
+    database "etcd" as Etcd {
+        note right
+            Leader 选举
+            元数据服务
+        end note
+    }
+    
+    component "Client Segments" as Segments {
+        [Segment 1\n(Client A)] as S1
+        [Segment 2\n(Client B)] as S2
+        [Segment 3\n(Client C)] as S3
+    }
+    
+    storage "SSD" as SSD {
+        note right
+            持久化存储
+            (可选)
+        end note
+    }
+}
+
+' 连接关系
+App --> Client : Put/Get API
+
+Client --> Master : RPC 调用
+MC --> Master : PutStart/PutEnd\nGetReplicaList
+TS --> TE : 数据传输请求
+TE --> Segments : RDMA/TCP 传输
+
+Master --> Etcd : Leader 选举\n(HA 模式)
+Master --> MS : 元数据读写
+MS --> AS : 分配策略查询
+AS --> Segments : 分配空间
+ET --> MS : 驱逐检查
+CM --> Segments : 健康检查
+
+Client --> SSD : 持久化写入\n(可选)
+
+' 数据传输路径（Client 之间）
+S1 ..> S2 : Transfer Engine\n(RDMA/TCP)
+S2 ..> S3 : Transfer Engine\n(RDMA/TCP)
+S3 ..> S1 : Transfer Engine\n(RDMA/TCP)
+
+@enduml
+
+
+
+
+
+
+

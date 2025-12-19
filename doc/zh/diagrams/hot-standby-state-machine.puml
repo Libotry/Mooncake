@@ -1,0 +1,139 @@
+@startuml state-machine
+!theme plain
+title Master 节点状态机
+
+[*] --> INITIALIZING : 节点启动
+
+state INITIALIZING {
+    [*] --> LoadConfig : 开始
+    LoadConfig : 加载配置文件
+    LoadConfig --> ConnectEtcd
+    ConnectEtcd : 连接 etcd 集群
+    ConnectEtcd --> CheckExistingLeader
+    CheckExistingLeader : 检查是否有现有 Leader
+    CheckExistingLeader --> [*]
+}
+
+INITIALIZING --> FOLLOWER : 存在 Leader\n进入 Follower 模式
+INITIALIZING --> CANDIDATE : 无 Leader\n尝试选举
+
+state FOLLOWER {
+    [*] --> ConnectingPrimary
+    ConnectingPrimary : 连接到 Primary
+    ConnectingPrimary --> Syncing : 连接成功
+    ConnectingPrimary --> WaitingForLeader : 连接失败
+    
+    state Syncing {
+        [*] --> ReceivingOpLog
+        ReceivingOpLog : 接收 OpLog 流
+        ReceivingOpLog --> ApplyingOpLog : 收到 OpLog
+        ApplyingOpLog : 应用到本地存储
+        ApplyingOpLog --> ReceivingOpLog : 应用完成
+        ApplyingOpLog --> Verifying : 定时触发核查
+        Verifying : 执行数据核查
+        Verifying --> ReceivingOpLog : 核查通过
+        Verifying --> RepairingData : 发现不一致
+        RepairingData : 修复数据
+        RepairingData --> ReceivingOpLog : 修复完成
+    }
+    
+    WaitingForLeader : Watch Leader Key
+    WaitingForLeader --> ConnectingPrimary : Leader 出现
+    
+    Syncing --> WaitingForLeader : Primary 断连
+}
+
+FOLLOWER --> CANDIDATE : Leader Key 消失\n且选举资格检查通过
+FOLLOWER --> RECOVERING : 数据差距过大\n需要全量恢复
+
+state CANDIDATE {
+    [*] --> Electing
+    Electing : 尝试创建 Leader Key\n(带 Lease 的事务)
+    Electing --> WaitingSafeWindow : 选举成功
+    Electing --> [*] : 选举失败
+    
+    WaitingSafeWindow : 等待旧 Lease TTL 过期\n防止脑裂
+    WaitingSafeWindow --> [*] : 等待完成
+}
+
+CANDIDATE --> LEADER : 选举成功\n安全窗口结束
+CANDIDATE --> FOLLOWER : 选举失败\n其他节点成为 Leader
+
+state LEADER {
+    [*] --> Activating
+    
+    Activating : 初始化 Leader 组件\n- ReplicationService\n- VerificationHandler\n- 递增 ViewVersion
+    Activating --> Serving : 初始化完成
+    
+    state Serving {
+        [*] --> ProcessingRequests
+        ProcessingRequests : 处理客户端 RPC 请求
+        ProcessingRequests --> GeneratingOpLog : 写操作
+        GeneratingOpLog : 生成 OpLog 条目
+        GeneratingOpLog --> ReplicatingOpLog : OpLog 生成完成
+        ReplicatingOpLog : 推送到 Standby 节点
+        ReplicatingOpLog --> ProcessingRequests
+        
+        ProcessingRequests --> Snapshotting : 定时触发快照
+        Snapshotting : 执行快照\n- Fork 或 COW\n- 写入存储
+        Snapshotting --> ProcessingRequests : 快照完成
+        
+        ProcessingRequests --> HandlingVerification : 收到核查请求
+        HandlingVerification : 响应 Standby 的核查请求
+        HandlingVerification --> ProcessingRequests
+    }
+    
+    Serving --> [*] : 服务异常/主动退出
+}
+
+LEADER --> FOLLOWER : Lease 续约失败\n失去 Leader 身份
+
+state RECOVERING {
+    [*] --> FetchingSnapshot
+    FetchingSnapshot : 下载最新快照\n从存储系统
+    FetchingSnapshot --> LoadingSnapshot : 下载完成
+    LoadingSnapshot : 加载快照到内存
+    LoadingSnapshot --> CatchingUpOpLog : 加载完成
+    CatchingUpOpLog : 追赶 OpLog\n从快照点开始
+    CatchingUpOpLog --> [*] : 追赶完成
+}
+
+RECOVERING --> FOLLOWER : 恢复完成\n数据已同步
+
+state ERROR {
+    [*] --> DiagnosingError
+    DiagnosingError : 诊断错误类型
+    DiagnosingError --> [*]
+}
+
+FOLLOWER --> ERROR : 严重错误
+LEADER --> ERROR : 严重错误
+RECOVERING --> ERROR : 恢复失败
+ERROR --> [*] : 需要人工介入
+
+note right of LEADER
+    Leader 职责:
+    1. 处理所有读写请求
+    2. 生成 OpLog
+    3. 推送 OpLog 到 Standby
+    4. 响应核查请求
+    5. 定期创建快照
+end note
+
+note right of FOLLOWER
+    Follower 职责:
+    1. 接收并应用 OpLog
+    2. 定期执行数据核查
+    3. 维护热备数据副本
+    4. 准备随时接管
+end note
+
+@enduml
+
+
+
+
+
+
+
+

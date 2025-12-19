@@ -1,0 +1,143 @@
+@startuml failover-sequence
+!theme plain
+title Failover Detailed Flow
+
+box "Primary (Before Failure)" #LightGreen
+    participant "Primary Master" as Primary
+end box
+
+box "etcd Cluster" #LightBlue
+    participant "etcd" as etcd
+end box
+
+box "Standby Nodes" #LightYellow
+    participant "Standby 1\n(Will become new Leader)" as Standby1
+    participant "Standby 2" as Standby2
+end box
+
+box "Clients" #LightGray
+    participant "vLLM Clients" as Clients
+end box
+
+== Normal Operation Phase ==
+
+Primary -> etcd : KeepAlive (every 2s)
+activate Primary
+activate etcd
+etcd --> Primary : Lease renewal success
+
+Primary -> Standby1 : OpLog Stream (seq=1000)
+Primary -> Standby2 : OpLog Stream (seq=1000)
+
+Standby1 -> Standby1 : Apply OpLog\napplied_seq=1000
+Standby2 -> Standby2 : Apply OpLog\napplied_seq=1000
+
+Clients -> Primary : Normal business requests
+
+== Primary Failure Occurs ==
+
+Primary -x Primary : Process crash/Network isolation
+deactivate Primary
+
+note over Primary: Primary stops sending KeepAlive
+
+etcd -> etcd : Wait for Lease TTL to expire\n(5 seconds)
+
+== Failure Detection Phase ==
+
+etcd -> etcd : Lease expired\nDelete Leader Key
+deactivate etcd
+
+etcd -> Standby1 : Watch notification:\n"Leader Key deleted"
+etcd -> Standby2 : Watch notification:\n"Leader Key deleted"
+
+activate Standby1
+activate Standby2
+
+== Leader Election Phase ==
+
+Standby1 -> Standby1 : 1. Check local state\napplied_seq=1000
+Standby2 -> Standby2 : 1. Check local state\napplied_seq=1000
+
+note over Standby1, Standby2
+    Election eligibility check:
+    - applied_seq gap with last known Primary seq < threshold
+    - No severe verification inconsistencies
+end note
+
+Standby1 -> etcd : 2. CreateKey(\n  key="/mooncake/master/leader",\n  value="standby1:port",\n  lease=new_lease\n)
+Standby2 -> etcd : 2. CreateKey(\n  key="/mooncake/master/leader",\n  value="standby2:port",\n  lease=new_lease\n)
+
+activate etcd
+
+note over etcd: Only one can succeed\n(etcd transaction guarantee)
+
+etcd --> Standby1 : CreateKey success!\n(Become new Leader)
+etcd --> Standby2 : CreateKey failed\n(Key already exists)
+
+deactivate etcd
+
+Standby2 -> Standby2 : 3. Return to Follower state
+Standby2 -> etcd : Watch new Leader Key
+deactivate Standby2
+
+== New Leader Activation Phase ==
+
+Standby1 -> Standby1 : 4. Wait for safety window\n(Old Lease TTL time)
+
+note over Standby1
+    Split-brain prevention:
+    Wait long enough to ensure old Leader
+    has completely lost write capability
+end note
+
+Standby1 -> Standby1 : 5. State check:\n- Confirm applied_seq complete\n- Confirm no unprocessed OpLog
+
+Standby1 -> Standby1 : 6. Switch role:\nFollower -> Leader
+
+Standby1 -> Standby1 : 7. Initialize components:\n- Start ReplicationService\n- Start VerificationHandler\n- Increment view_version
+
+Standby1 -> etcd : 8. Update Master View:\n{addr: "standby1:port", version: N+1}
+
+activate etcd
+etcd --> Standby1 : Update success
+deactivate etcd
+
+Standby1 -> Standby1 : 9. Start RPC service\nBegin accepting requests
+
+== Service Recovery Phase ==
+
+Clients -> etcd : Query Master address\n(Periodic refresh or Watch)
+activate etcd
+etcd --> Clients : Return "standby1:port"
+deactivate etcd
+
+Clients -> Standby1 : Resume business requests
+
+activate Standby2
+
+Standby2 -> Standby1 : Establish new Replication connection
+Standby1 --> Standby2 : OpLog Stream begins
+
+deactivate Standby2
+
+note over Standby1, Clients #LightGreen
+    Failover complete!
+    Total time: ~10 seconds
+    - Lease expiration: 5s
+    - Election: <1s  
+    - Safety window: 5s
+    - Service startup: <1s
+end note
+
+deactivate Standby1
+
+@enduml
+
+
+
+
+
+
+
+

@@ -1,0 +1,82 @@
+@startuml
+title Store Memory Management - Flowchart
+
+start
+
+partition Client {
+  :计算 object key 并准备分片(slices);
+  :调用 PutStart(key, slice_lengths);
+}
+
+partition Master {
+  :接收 PutStart，并调用 AllocationStrategy::Allocate;
+  :选择可用的 SegmentManager / allocators;
+}
+
+partition "SegmentManager" {
+  :为每个 slice 调用 allocate(size);
+  :返回 AllocatedBuffer 给 SegmentManager;
+  :返回 Replica(status=PROCESSING) 给 Master;
+}
+
+partition Client {
+  :接收 Replica::Descriptor(endpoint, addr, size);
+}
+
+if (写模式 == 本地?) then (是)
+  partition "Client/Store(Allocator)" {
+    :使用 memcpy 将数据写入 buffer_address;
+  }
+else (否)
+  partition Client {
+    :调用 TransferEngine.submitTransfer(descriptor);
+  }
+  partition TransferEngine {
+    :将数据写入 Store(Allocator) 的 buffer_address;
+  }
+endif
+
+partition Client {
+  :调用 PutEnd(key);
+}
+
+partition Master {
+  :标记 Replica 为 COMPLETE 并 GrantLease;
+}
+
+if (有读请求?) then (是)
+  partition Client {
+    :调用 GetReplicaList(key);
+  }
+  partition Master {
+    :返回 descriptors 给 Client;
+    :在读取时延长 lease;
+  }
+  partition "Client/Store(Allocator)" {
+    :根据 descriptor 读取数据;
+  }
+endif
+
+if (触发回收?) then (是)
+  partition System {
+    :调用 Master::BatchEvict();
+  }
+  partition Master {
+    :收集回收候选（每个 shard 局部选择 + 全局 nth_element 阈值）;
+    :从 metadata 中删除选中的 Replica / ObjectMetadata;
+  }
+  note right: Replica 持有 unique_ptr<AllocatedBuffer>
+  partition Replica {
+    :析构 -> 触发 AllocatedBuffer::~AllocatedBuffer();
+  }
+  partition AllocatedBuffer {
+    :通过 allocator->deallocate(this) 释放内存;
+  }
+  partition Allocator {
+    :释放内存并更新度量指标;
+  }
+endif
+
+stop
+
+@enduml

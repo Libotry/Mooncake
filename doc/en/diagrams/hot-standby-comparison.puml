@@ -1,0 +1,105 @@
+@startuml mode-comparison
+!theme plain
+title Three High Availability Modes Comparison Analysis
+
+' ===== Snapshot Mode =====
+rectangle "Snapshot Mode (Snapshot Only)" as Snapshot #FFB6C1 {
+    
+    card "How it works" as S_How {
+        note as S_Note1
+            Periodically serialize
+            in-memory metadata
+            to persistent storage
+        end note
+    }
+    
+    card "RPO: Minutes" as S_RPO #FFCCCC
+    card "RTO: Sec~Min" as S_RTO #FFCCCC
+    card "Complexity: Low" as S_Complexity #90EE90
+    card "Overhead: Low" as S_Overhead #90EE90
+}
+
+' ===== Hot Standby Mode =====
+rectangle "Hot Standby Mode" as HotStandby #90EE90 {
+    
+    card "How it works" as H_How {
+        note as H_Note1
+            Real-time OpLog sync
+            + Periodic verification
+            mechanism
+        end note
+    }
+    
+    card "RPO: Seconds/Zero" as H_RPO #90EE90
+    card "RTO: <5 sec" as H_RTO #90EE90
+    card "Complexity: High" as H_Complexity #FFCCCC
+    card "Overhead: Medium" as H_Overhead #FFE4B5
+}
+
+' ===== Hybrid Mode =====
+rectangle "Hybrid Mode" as Hybrid #87CEEB {
+    
+    card "How it works" as M_How {
+        note as M_Note1
+            Real-time OpLog sync
+            + Periodic snapshots
+            + Verification mechanism
+        end note
+    }
+    
+    card "RPO: Seconds" as M_RPO #90EE90
+    card "RTO: <5 sec" as M_RTO #90EE90
+    card "Complexity: Med-High" as M_Complexity #FFE4B5
+    card "Overhead: Medium" as M_Overhead #FFE4B5
+}
+
+' ===== Timeline Comparison =====
+
+rectangle "Failure Recovery Timeline Comparison" as Timeline {
+    
+    note as Timeline_Snapshot
+        **Snapshot Mode**
+        ════════════════════════════════►
+        │         │              │
+        T0        T1             T2
+        │         │              │
+        [Snap]    [Failure]      [Recovery]
+        │    Data lost ──────────►│
+        │                        │
+        RPO = T1 - T0 (possibly minutes)
+        RTO = Snapshot load time (depends on data size)
+    end note
+    
+    note as Timeline_HotStandby
+        **Hot Standby Mode**
+        ════════════════════════════════►
+        │ │ │ │ │ │ │ │ │ │ │ │ │
+        T0      ...               T1    T2
+        │ Continuous OpLog sync ──►│     │
+                                  │     │
+                              [Failure] [Recovery]
+        RPO = Last OpLog batch delay (~1 sec)
+        RTO = Election + Safety window (~5-10 sec)
+    end note
+    
+    note as Timeline_Hybrid
+        **Hybrid Mode**
+        ════════════════════════════════►
+        │ │ │ │    │ │ │ │ │    │ │ │
+        T0  ...   [Snap]  ...   T1    T2
+        │ OpLog ──►│ OpLog ────►│     │
+                                [Failure] [Recovery]
+        Normal: RPO ~1 sec, RTO ~5 sec
+        Cold start: Recover from snapshot + OpLog catch-up
+    end note
+}
+
+@enduml
+
+
+
+
+
+
+
+

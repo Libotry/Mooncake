@@ -1,0 +1,143 @@
+@startuml failover-sequence
+!theme plain
+title 故障切换详细流程
+
+box "Primary (故障前)" #LightGreen
+    participant "Primary Master" as Primary
+end box
+
+box "etcd Cluster" #LightBlue
+    participant "etcd" as etcd
+end box
+
+box "Standby Nodes" #LightYellow
+    participant "Standby 1\n(将成为新Leader)" as Standby1
+    participant "Standby 2" as Standby2
+end box
+
+box "Clients" #LightGray
+    participant "vLLM Clients" as Clients
+end box
+
+== 正常运行阶段 ==
+
+Primary -> etcd : KeepAlive (每2秒)
+activate Primary
+activate etcd
+etcd --> Primary : Lease 续约成功
+
+Primary -> Standby1 : OpLog Stream (seq=1000)
+Primary -> Standby2 : OpLog Stream (seq=1000)
+
+Standby1 -> Standby1 : 应用 OpLog\napplied_seq=1000
+Standby2 -> Standby2 : 应用 OpLog\napplied_seq=1000
+
+Clients -> Primary : 正常业务请求
+
+== Primary 故障发生 ==
+
+Primary -x Primary : 进程崩溃/网络隔离
+deactivate Primary
+
+note over Primary: Primary 停止发送 KeepAlive
+
+etcd -> etcd : 等待 Lease TTL 过期\n(5 秒)
+
+== 故障检测阶段 ==
+
+etcd -> etcd : Lease 过期\n删除 Leader Key
+deactivate etcd
+
+etcd -> Standby1 : Watch 通知:\n"Leader Key 已删除"
+etcd -> Standby2 : Watch 通知:\n"Leader Key 已删除"
+
+activate Standby1
+activate Standby2
+
+== Leader 选举阶段 ==
+
+Standby1 -> Standby1 : 1. 检查本地状态\napplied_seq=1000
+Standby2 -> Standby2 : 1. 检查本地状态\napplied_seq=1000
+
+note over Standby1, Standby2
+    选举资格检查:
+    - applied_seq 与最后已知的 Primary seq 差距 < 阈值
+    - 数据核查无严重不一致
+end note
+
+Standby1 -> etcd : 2. CreateKey(\n  key="/mooncake/master/leader",\n  value="standby1:port",\n  lease=new_lease\n)
+Standby2 -> etcd : 2. CreateKey(\n  key="/mooncake/master/leader",\n  value="standby2:port",\n  lease=new_lease\n)
+
+activate etcd
+
+note over etcd: etcd 事务保证\n只有一个成功
+
+etcd --> Standby1 : CreateKey 成功!\n(成为新 Leader)
+etcd --> Standby2 : CreateKey 失败\n(key 已存在)
+
+deactivate etcd
+
+Standby2 -> Standby2 : 3. 回到 Follower 状态
+Standby2 -> etcd : Watch 新 Leader Key
+deactivate Standby2
+
+== 新 Leader 激活阶段 ==
+
+Standby1 -> Standby1 : 4. 等待安全窗口\n(旧Lease TTL时间)
+
+note over Standby1
+    防止脑裂:
+    等待足够时间确保旧 Leader
+    已完全失去写能力
+end note
+
+Standby1 -> Standby1 : 5. 状态检查:\n- 确认 applied_seq 完整\n- 确认无未处理 OpLog
+
+Standby1 -> Standby1 : 6. 切换角色:\nFollower -> Leader
+
+Standby1 -> Standby1 : 7. 初始化组件:\n- 启动 ReplicationService\n- 启动 VerificationHandler\n- 递增 view_version
+
+Standby1 -> etcd : 8. 更新 Master View:\n{addr: "standby1:port", version: N+1}
+
+activate etcd
+etcd --> Standby1 : 更新成功
+deactivate etcd
+
+Standby1 -> Standby1 : 9. 启动 RPC 服务\n开始接受请求
+
+== 服务恢复阶段 ==
+
+Clients -> etcd : 查询 Master 地址\n(定期刷新或Watch)
+activate etcd
+etcd --> Clients : 返回 "standby1:port"
+deactivate etcd
+
+Clients -> Standby1 : 恢复业务请求
+
+activate Standby2
+
+Standby2 -> Standby1 : 建立新的 Replication 连接
+Standby1 --> Standby2 : OpLog Stream 开始
+
+deactivate Standby2
+
+note over Standby1, Clients #LightGreen
+    故障切换完成!
+    总耗时: ~10秒
+    - Lease 过期: 5秒
+    - 选举: <1秒  
+    - 安全窗口: 5秒
+    - 服务启动: <1秒
+end note
+
+deactivate Standby1
+
+@enduml
+
+
+
+
+
+
+
+

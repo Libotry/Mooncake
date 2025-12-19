@@ -1,0 +1,102 @@
+@startuml hot-standby-architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title Master Service 热备混合模式 - 完整架构图
+
+' ===== 样式定义 =====
+skinparam component {
+    BackgroundColor<<primary>> #90EE90
+    BackgroundColor<<standby>> #FFE4B5
+    BackgroundColor<<storage>> #E6E6FA
+    BackgroundColor<<client>> #87CEEB
+}
+
+' ===== Master 集群 =====
+package "Master Cluster (HA)" as MasterCluster {
+    
+    package "Primary Master (Leader)" <<primary>> {
+        component [MasterService\n元数据管理] as PrimaryMS
+        component [OpLogManager\nOpLog 生成与管理] as OpLogMgr
+        component [ReplicationService\n复制服务] as RepSvc
+        component [VerificationHandler\n核查请求处理] as VerifyHandler
+        component [SnapshotManager\n快照管理] as SnapMgr
+        
+        PrimaryMS -down-> OpLogMgr : 1. 写操作\n生成OpLog
+        OpLogMgr -right-> RepSvc : 2. 推送OpLog
+        VerifyHandler -up-> PrimaryMS : 查询数据
+        PrimaryMS -down-> SnapMgr : 定期触发
+    }
+    
+    package "Standby Master 1 (Hot Standby)" <<standby>> {
+        component [HotStandbyService\n热备核心服务] as HotStandby1
+        component [OpLogApplier\nOpLog 应用器] as Applier1
+        component [MetadataStore\n副本元数据] as StandbyMeta1
+        component [VerificationClient\n核查客户端] as VerifyClient1
+        
+        HotStandby1 -down-> Applier1 : 3. 转发OpLog
+        Applier1 -down-> StandbyMeta1 : 4. 应用变更
+        VerifyClient1 -left-> StandbyMeta1 : 读取数据
+    }
+    
+    package "Standby Master 2 (Hot Standby)" <<standby>> {
+        component [HotStandbyService] as HotStandby2
+        component [MetadataStore\n副本元数据] as StandbyMeta2
+    }
+}
+
+' ===== 复制连接 =====
+RepSvc <-down-> HotStandby1 : gRPC Stream\n(OpLog 实时推送)
+RepSvc <-down-> HotStandby2 : gRPC Stream
+
+' ===== 核查连接 =====
+VerifyClient1 -up-> VerifyHandler : 定期核查\n{prefix_hash, checksum}
+
+' ===== etcd 集群 =====
+database "etcd Cluster" as etcd {
+    [Leader Election\nKey: /mooncake/master/leader]
+    [Service Discovery\nKey: /mooncake/master/view]
+}
+
+PrimaryMS -down-> etcd : Lease KeepAlive\n(TTL=5s)
+HotStandby1 -down-> etcd : Watch Leader Key
+HotStandby2 -down-> etcd : Watch Leader Key
+
+' ===== 快照存储 =====
+package "Snapshot Storage" <<storage>> {
+    storage "Local FS / S3\n/var/mooncake/snapshots/" as SnapStorage
+}
+
+SnapMgr -right-> SnapStorage : 写入快照\n(每5分钟)
+HotStandby1 ..> SnapStorage : 冷启动时\n加载快照
+
+' ===== 客户端 =====
+package "vLLM Inference Cluster" <<client>> {
+    [vLLM Instance 1] as vLLM1
+    [vLLM Instance 2] as vLLM2
+    [vLLM Instance N] as vLLMN
+}
+
+vLLM1 -up-> PrimaryMS : RPC\n(Query/Put/Remove)
+vLLM2 -up-> PrimaryMS : RPC
+vLLMN -up-> PrimaryMS : RPC
+
+' ===== 图例 =====
+legend right
+    |= 颜色 |= 含义 |
+    | <#90EE90> | Primary (Leader) |
+    | <#FFE4B5> | Standby (Hot Standby) |
+    | <#E6E6FA> | 持久化存储 |
+    | <#87CEEB> | 客户端 |
+endlegend
+
+@enduml
+
+
+
+
+
+
+
+

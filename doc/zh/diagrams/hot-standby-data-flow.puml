@@ -1,0 +1,126 @@
+@startuml data-flow
+!theme plain
+title OpLog 数据同步流程
+
+participant "Client" as Client
+participant "Primary\nMasterService" as PrimaryMS
+participant "OpLog\nManager" as OpLogMgr
+participant "Replication\nService" as RepSvc
+participant "Standby 1\nHotStandbyService" as Standby1
+participant "Standby 2\nHotStandbyService" as Standby2
+
+== 写操作产生 OpLog ==
+
+Client -> PrimaryMS : PutStart(key="user:123:kv", size=4MB)
+activate PrimaryMS
+
+PrimaryMS -> PrimaryMS : 1. 分配副本空间\n选择存储节点
+
+PrimaryMS -> OpLogMgr : 2. Append(OpLogEntry)
+activate OpLogMgr
+
+note right of OpLogMgr
+    OpLogEntry {
+      sequence_id: 10001,
+      timestamp_ms: 1702300000000,
+      op_type: PUT_START,
+      object_key: "user:123:kv",
+      payload: serialized(replicas),
+      prefix_hash: CRC32("user:123"),
+      checksum: CRC32(payload)
+    }
+end note
+
+OpLogMgr --> PrimaryMS : 返回 seq_id=10001
+deactivate OpLogMgr
+
+PrimaryMS --> Client : 返回分配的副本位置
+
+deactivate PrimaryMS
+
+== OpLog 异步推送到 Standby ==
+
+OpLogMgr -> RepSvc : 3. OnNewOpLog(entry)
+activate RepSvc
+
+par 并行推送
+    RepSvc -> Standby1 : 4a. PushOpLog(entry)
+    activate Standby1
+    Standby1 -> Standby1 : 应用到本地 MetadataStore
+    Standby1 --> RepSvc : ACK(seq_id=10001)
+    deactivate Standby1
+also
+    RepSvc -> Standby2 : 4b. PushOpLog(entry)
+    activate Standby2
+    Standby2 -> Standby2 : 应用到本地 MetadataStore
+    Standby2 --> RepSvc : ACK(seq_id=10001)
+    deactivate Standby2
+end
+
+RepSvc -> RepSvc : 5. 更新 ACK 状态\nStandby1: 10001, Standby2: 10001
+
+deactivate RepSvc
+
+== 批量同步优化 ==
+
+note over PrimaryMS, Standby2
+    批量同步策略:
+    - 累积多个 OpLog 后批量发送 (batch_size=100)
+    - 或超时后立即发送 (timeout=10ms)
+    - 减少网络往返次数
+end note
+
+Client -> PrimaryMS : PutEnd(key="user:123:kv")
+Client -> PrimaryMS : Put(key="user:456:kv", ...)
+Client -> PrimaryMS : Remove(key="user:789:kv")
+
+PrimaryMS -> OpLogMgr : Append(PUT_END, seq=10002)
+PrimaryMS -> OpLogMgr : Append(PUT_START, seq=10003)
+PrimaryMS -> OpLogMgr : Append(REMOVE, seq=10004)
+
+OpLogMgr -> RepSvc : OnNewOpLog (batch ready)
+activate RepSvc
+
+RepSvc -> Standby1 : BatchPushOpLog([10002, 10003, 10004])
+RepSvc -> Standby2 : BatchPushOpLog([10002, 10003, 10004])
+
+Standby1 --> RepSvc : BatchACK(last_seq=10004)
+Standby2 --> RepSvc : BatchACK(last_seq=10004)
+
+deactivate RepSvc
+
+== 同步模式 (可选) ==
+
+note over Client, Standby2 #FFCCCC
+    可配置同步复制模式 (sync_replication=true):
+    - 写操作需等待至少 1 个 Standby ACK
+    - 保证 RPO=0, 但增加写延迟
+end note
+
+Client -> PrimaryMS : Put(key="critical:data", sync=true)
+activate PrimaryMS
+
+PrimaryMS -> OpLogMgr : Append(PUT_START, seq=10005)
+OpLogMgr -> RepSvc : PushOpLog(sync=true)
+activate RepSvc
+
+RepSvc -> Standby1 : PushOpLog
+activate Standby1
+Standby1 --> RepSvc : ACK
+deactivate Standby1
+
+RepSvc --> PrimaryMS : 至少1个ACK收到
+deactivate RepSvc
+
+PrimaryMS --> Client : 写入成功
+deactivate PrimaryMS
+
+@enduml
+
+
+
+
+
+
+
+

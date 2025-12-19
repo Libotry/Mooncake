@@ -1,0 +1,88 @@
+@startuml verification-sequence
+!theme plain
+title Data Verification Mechanism Detailed Flow
+
+participant "Standby Master" as Standby
+participant "Verification\nClient" as VerifyClient
+participant "Primary Master" as Primary
+participant "Verification\nHandler" as VerifyHandler
+database "Standby\nMetadata" as StandbyDB
+database "Primary\nMetadata" as PrimaryDB
+
+== Periodic Verification Flow (Triggered every 30 seconds) ==
+
+Standby -> VerifyClient : Trigger verification
+activate VerifyClient
+
+VerifyClient -> VerifyClient : 1. Select shards to verify\n(Round-robin, 10% per round)
+
+loop For each selected Shard
+    VerifyClient -> StandbyDB : 2. Sample keys from this Shard\n(Max 100 keys)
+    activate StandbyDB
+    StandbyDB --> VerifyClient : Return [{key, metadata}...]
+    deactivate StandbyDB
+    
+    VerifyClient -> VerifyClient : 3. Calculate verification info:\n  for each (key, meta):\n    prefix_hash = CRC32(key[0:8])\n    checksum = CRC32(serialize(meta))
+end
+
+VerifyClient -> Primary : 4. VerificationRequest {\n  shard_ids: [12, 45, 78],\n  entries: [\n    {prefix_hash: 0xABCD1234, checksum: 0x12345678},\n    {prefix_hash: 0xEF012345, checksum: 0x87654321},\n    ...\n  ],\n  standby_seq_id: 10234\n}
+activate Primary
+
+Primary -> VerifyHandler : Handle verification request
+activate VerifyHandler
+
+VerifyHandler -> VerifyHandler : 5. Check seq_id gap\n(If gap > threshold, return NEED_FULL_SYNC)
+
+loop For each prefix_hash
+    VerifyHandler -> PrimaryDB : 6. Find matching keys\nby prefix_hash
+    activate PrimaryDB
+    PrimaryDB --> VerifyHandler : Return matching metadata
+    deactivate PrimaryDB
+    
+    VerifyHandler -> VerifyHandler : 7. Calculate local checksum\nand compare with request
+    
+    alt checksum mismatch
+        VerifyHandler -> VerifyHandler : Record in mismatches list
+    end
+end
+
+deactivate VerifyHandler
+
+alt All data consistent
+    Primary --> VerifyClient : VerificationResponse {\n  status: OK,\n  mismatches: [],\n  primary_seq_id: 10235\n}
+else Inconsistencies found
+    Primary --> VerifyClient : VerificationResponse {\n  status: MISMATCH,\n  mismatches: [\n    {key: "prefix:xxx", correct_meta: ...},\n    ...\n  ],\n  primary_seq_id: 10235\n}
+else seq_id gap too large
+    Primary --> VerifyClient : VerificationResponse {\n  status: NEED_FULL_SYNC,\n  snapshot_url: "s3://..."\n}
+end
+
+deactivate Primary
+
+alt Received MISMATCH response
+    VerifyClient -> StandbyDB : 8. Repair inconsistent data\n(Overwrite with correct_meta)
+    VerifyClient -> VerifyClient : 9. Log warning\n"Data inconsistency detected..."
+else Received NEED_FULL_SYNC
+    VerifyClient -> Standby : Trigger full sync
+    Standby -> Standby : Recover from latest snapshot
+end
+
+VerifyClient --> Standby : Verification complete
+deactivate VerifyClient
+
+note over Standby, Primary
+    Verification Strategy Notes:
+    - Each round verifies 10% of Shards (~102 shards)
+    - Max 100 keys sampled per Shard
+    - 5 minutes to complete full round of all Shards
+    - prefix_hash uses first 8 bytes of key for fast lookup
+end note
+
+@enduml
+
+
+
+
+
+
+
+

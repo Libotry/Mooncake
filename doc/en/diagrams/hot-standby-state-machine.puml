@@ -1,0 +1,139 @@
+@startuml state-machine
+!theme plain
+title Master Node State Machine
+
+[*] --> INITIALIZING : Node startup
+
+state INITIALIZING {
+    [*] --> LoadConfig : Start
+    LoadConfig : Load configuration file
+    LoadConfig --> ConnectEtcd
+    ConnectEtcd : Connect to etcd cluster
+    ConnectEtcd --> CheckExistingLeader
+    CheckExistingLeader : Check if existing Leader exists
+    CheckExistingLeader --> [*]
+}
+
+INITIALIZING --> FOLLOWER : Leader exists\nEnter Follower mode
+INITIALIZING --> CANDIDATE : No Leader\nAttempt election
+
+state FOLLOWER {
+    [*] --> ConnectingPrimary
+    ConnectingPrimary : Connect to Primary
+    ConnectingPrimary --> Syncing : Connection success
+    ConnectingPrimary --> WaitingForLeader : Connection failed
+    
+    state Syncing {
+        [*] --> ReceivingOpLog
+        ReceivingOpLog : Receive OpLog stream
+        ReceivingOpLog --> ApplyingOpLog : Received OpLog
+        ApplyingOpLog : Apply to local storage
+        ApplyingOpLog --> ReceivingOpLog : Apply complete
+        ApplyingOpLog --> Verifying : Periodic trigger
+        Verifying : Execute data verification
+        Verifying --> ReceivingOpLog : Verification passed
+        Verifying --> RepairingData : Inconsistency found
+        RepairingData : Repair data
+        RepairingData --> ReceivingOpLog : Repair complete
+    }
+    
+    WaitingForLeader : Watch Leader Key
+    WaitingForLeader --> ConnectingPrimary : Leader appeared
+    
+    Syncing --> WaitingForLeader : Primary disconnected
+}
+
+FOLLOWER --> CANDIDATE : Leader Key disappeared\nand election eligibility check passed
+FOLLOWER --> RECOVERING : Data gap too large\nNeed full recovery
+
+state CANDIDATE {
+    [*] --> Electing
+    Electing : Attempt to create Leader Key\n(Transaction with Lease)
+    Electing --> WaitingSafeWindow : Election success
+    Electing --> [*] : Election failed
+    
+    WaitingSafeWindow : Wait for old Lease TTL to expire\nPrevent split-brain
+    WaitingSafeWindow --> [*] : Wait complete
+}
+
+CANDIDATE --> LEADER : Election success\nSafety window ended
+CANDIDATE --> FOLLOWER : Election failed\nOther node became Leader
+
+state LEADER {
+    [*] --> Activating
+    
+    Activating : Initialize Leader components\n- ReplicationService\n- VerificationHandler\n- Increment ViewVersion
+    Activating --> Serving : Init complete
+    
+    state Serving {
+        [*] --> ProcessingRequests
+        ProcessingRequests : Process client RPC requests
+        ProcessingRequests --> GeneratingOpLog : Write operation
+        GeneratingOpLog : Generate OpLog entry
+        GeneratingOpLog --> ReplicatingOpLog : OpLog generated
+        ReplicatingOpLog : Push to Standby nodes
+        ReplicatingOpLog --> ProcessingRequests
+        
+        ProcessingRequests --> Snapshotting : Periodic snapshot trigger
+        Snapshotting : Execute snapshot\n- Fork or COW\n- Write to storage
+        Snapshotting --> ProcessingRequests : Snapshot complete
+        
+        ProcessingRequests --> HandlingVerification : Verification request received
+        HandlingVerification : Respond to Standby verification requests
+        HandlingVerification --> ProcessingRequests
+    }
+    
+    Serving --> [*] : Service exception/Active exit
+}
+
+LEADER --> FOLLOWER : Lease renewal failed\nLost Leader identity
+
+state RECOVERING {
+    [*] --> FetchingSnapshot
+    FetchingSnapshot : Download latest snapshot\nfrom storage system
+    FetchingSnapshot --> LoadingSnapshot : Download complete
+    LoadingSnapshot : Load snapshot into memory
+    LoadingSnapshot --> CatchingUpOpLog : Load complete
+    CatchingUpOpLog : Catch up OpLog\nfrom snapshot point
+    CatchingUpOpLog --> [*] : Catch-up complete
+}
+
+RECOVERING --> FOLLOWER : Recovery complete\nData synchronized
+
+state ERROR {
+    [*] --> DiagnosingError
+    DiagnosingError : Diagnose error type
+    DiagnosingError --> [*]
+}
+
+FOLLOWER --> ERROR : Severe error
+LEADER --> ERROR : Severe error
+RECOVERING --> ERROR : Recovery failed
+ERROR --> [*] : Requires manual intervention
+
+note right of LEADER
+    Leader Responsibilities:
+    1. Handle all read/write requests
+    2. Generate OpLog
+    3. Push OpLog to Standbys
+    4. Respond to verification requests
+    5. Create periodic snapshots
+end note
+
+note right of FOLLOWER
+    Follower Responsibilities:
+    1. Receive and apply OpLog
+    2. Periodic data verification
+    3. Maintain hot standby data replica
+    4. Ready to take over anytime
+end note
+
+@enduml
+
+
+
+
+
+
+
+

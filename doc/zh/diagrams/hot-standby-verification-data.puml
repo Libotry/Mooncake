@@ -1,0 +1,164 @@
+@startuml verification-data-structures
+!theme plain
+title 核查机制数据结构详解
+
+' ===== 核查请求数据结构 =====
+package "核查请求 (Standby -> Primary)" {
+    
+    class VerificationRequest {
+        + uint32_t shard_id
+        + uint64_t standby_last_seq_id
+        + std::vector<VerificationEntry> entries
+        --
+        每轮核查约 100 个条目
+    }
+    
+    class VerificationEntry {
+        + uint32_t prefix_hash
+        + uint32_t checksum
+        --
+        prefix_hash 和 checksum
+        都是 32 位, 节省带宽
+    }
+    
+    VerificationRequest o-- "0..*" VerificationEntry
+    
+    note right of VerificationEntry
+        **prefix_hash 计算方式**:
+        prefix_hash = CRC32(object_key.substr(0, 8))
+        
+        使用前缀哈希的原因:
+        1. 节省带宽 (4字节 vs 可变长key)
+        2. 支持批量查找
+        3. 冲突概率低 (10亿key约0.02%冲突)
+        
+        **checksum 计算方式**:
+        checksum = CRC32(serialize(ObjectMetadata))
+        
+        包含: replicas, size, status 等
+        不含: lease_timeout (会变化)
+    end note
+}
+
+' ===== 核查响应数据结构 =====
+package "核查响应 (Primary -> Standby)" {
+    
+    enum VerificationStatus {
+        OK = 0
+        MISMATCH = 1
+        NEED_FULL_SYNC = 2
+    }
+    
+    class VerificationResponse {
+        + VerificationStatus status
+        + uint64_t primary_seq_id
+        + std::vector<MismatchEntry> mismatches
+        --
+        primary_seq_id 用于判断同步进度
+    }
+    
+    class MismatchEntry {
+        + uint32_t prefix_hash
+        + std::string object_key
+        + bytes correct_metadata
+        + MismatchType type
+        --
+        包含完整的正确数据
+        用于修复 Standby
+    }
+    
+    enum MismatchType {
+        CHECKSUM_MISMATCH
+        KEY_NOT_FOUND
+        EXTRA_KEY
+    }
+    
+    VerificationResponse --> VerificationStatus
+    VerificationResponse o-- "0..*" MismatchEntry
+    MismatchEntry --> MismatchType
+}
+
+' ===== ObjectMetadata 用于 checksum 计算 =====
+package "Checksum 计算范围" {
+    
+    class ObjectMetadata <<用于checksum>> {
+        + std::vector<Replica> replicas
+        + size_t size
+        --
+        以下字段不参与 checksum:
+        - lease_timeout (动态变化)
+        - soft_pin_timeout (动态变化)
+    }
+    
+    class Replica <<参与checksum>> {
+        + ReplicaStatus status
+        + ReplicaData data
+    }
+    
+    class MemoryReplicaData {
+        + segment_name
+        + address
+        + size
+    }
+    
+    class DiskReplicaData {
+        + file_path
+        + object_size
+    }
+    
+    ObjectMetadata o-- "1..*" Replica
+    Replica --> MemoryReplicaData
+    Replica --> DiskReplicaData
+    
+    note bottom of ObjectMetadata
+        **Checksum 稳定性设计**:
+        
+        只对静态字段计算 checksum:
+        - replicas: 副本位置信息
+        - size: 对象大小
+        - status: 副本状态
+        
+        排除动态字段:
+        - lease_timeout: 每次访问都会变
+        - soft_pin_timeout: 定期变化
+        
+        这样保证同一对象在主备
+        计算出相同的 checksum
+    end note
+}
+
+' ===== 核查策略配置 =====
+package "核查策略" {
+    
+    class VerificationConfig {
+        + uint32_t interval_sec = 30
+        + float sample_ratio = 0.1
+        + uint32_t entries_per_shard = 100
+        + uint32_t max_mismatches_for_repair = 10
+        + uint32_t seq_diff_threshold = 1000
+    }
+    
+    note right of VerificationConfig
+        **核查频率控制**:
+        - 每 30 秒触发一轮核查
+        - 每轮检查 10% 的 Shards
+        - 5 分钟完成全量核查
+        
+        **修复阈值**:
+        - 不一致条目 <= 10: 自动修复
+        - 不一致条目 > 10: 触发全量同步
+        
+        **同步差距阈值**:
+        - seq_diff > 1000: 返回 NEED_FULL_SYNC
+    end note
+}
+
+@enduml
+
+
+
+
+
+
+
+

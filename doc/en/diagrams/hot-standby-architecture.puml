@@ -1,0 +1,102 @@
+@startuml hot-standby-architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title Master Service Hot Standby Hybrid Mode - Complete Architecture
+
+' ===== Style Definitions =====
+skinparam component {
+    BackgroundColor<<primary>> #90EE90
+    BackgroundColor<<standby>> #FFE4B5
+    BackgroundColor<<storage>> #E6E6FA
+    BackgroundColor<<client>> #87CEEB
+}
+
+' ===== Master Cluster =====
+package "Master Cluster (HA)" as MasterCluster {
+    
+    package "Primary Master (Leader)" <<primary>> {
+        component [MasterService\nMetadata Management] as PrimaryMS
+        component [OpLogManager\nOpLog Generation & Mgmt] as OpLogMgr
+        component [ReplicationService\nReplication Service] as RepSvc
+        component [VerificationHandler\nVerification Request Handler] as VerifyHandler
+        component [SnapshotManager\nSnapshot Management] as SnapMgr
+        
+        PrimaryMS -down-> OpLogMgr : 1. Write ops\ngenerate OpLog
+        OpLogMgr -right-> RepSvc : 2. Push OpLog
+        VerifyHandler -up-> PrimaryMS : Query data
+        PrimaryMS -down-> SnapMgr : Periodic trigger
+    }
+    
+    package "Standby Master 1 (Hot Standby)" <<standby>> {
+        component [HotStandbyService\nHot Standby Core Service] as HotStandby1
+        component [OpLogApplier\nOpLog Applier] as Applier1
+        component [MetadataStore\nReplica Metadata] as StandbyMeta1
+        component [VerificationClient\nVerification Client] as VerifyClient1
+        
+        HotStandby1 -down-> Applier1 : 3. Forward OpLog
+        Applier1 -down-> StandbyMeta1 : 4. Apply changes
+        VerifyClient1 -left-> StandbyMeta1 : Read data
+    }
+    
+    package "Standby Master 2 (Hot Standby)" <<standby>> {
+        component [HotStandbyService] as HotStandby2
+        component [MetadataStore\nReplica Metadata] as StandbyMeta2
+    }
+}
+
+' ===== Replication Connections =====
+RepSvc <-down-> HotStandby1 : gRPC Stream\n(Real-time OpLog Push)
+RepSvc <-down-> HotStandby2 : gRPC Stream
+
+' ===== Verification Connections =====
+VerifyClient1 -up-> VerifyHandler : Periodic Verification\n{prefix_hash, checksum}
+
+' ===== etcd Cluster =====
+database "etcd Cluster" as etcd {
+    [Leader Election\nKey: /mooncake/master/leader]
+    [Service Discovery\nKey: /mooncake/master/view]
+}
+
+PrimaryMS -down-> etcd : Lease KeepAlive\n(TTL=5s)
+HotStandby1 -down-> etcd : Watch Leader Key
+HotStandby2 -down-> etcd : Watch Leader Key
+
+' ===== Snapshot Storage =====
+package "Snapshot Storage" <<storage>> {
+    storage "Local FS / S3\n/var/mooncake/snapshots/" as SnapStorage
+}
+
+SnapMgr -right-> SnapStorage : Write Snapshot\n(Every 5 min)
+HotStandby1 ..> SnapStorage : Load snapshot\non cold start
+
+' ===== Clients =====
+package "vLLM Inference Cluster" <<client>> {
+    [vLLM Instance 1] as vLLM1
+    [vLLM Instance 2] as vLLM2
+    [vLLM Instance N] as vLLMN
+}
+
+vLLM1 -up-> PrimaryMS : RPC\n(Query/Put/Remove)
+vLLM2 -up-> PrimaryMS : RPC
+vLLMN -up-> PrimaryMS : RPC
+
+' ===== Legend =====
+legend right
+    |= Color |= Meaning |
+    | <#90EE90> | Primary (Leader) |
+    | <#FFE4B5> | Standby (Hot Standby) |
+    | <#E6E6FA> | Persistent Storage |
+    | <#87CEEB> | Client |
+endlegend
+
+@enduml
+
+
+
+
+
+
+
+

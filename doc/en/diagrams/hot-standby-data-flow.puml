@@ -1,0 +1,126 @@
+@startuml data-flow
+!theme plain
+title OpLog Data Synchronization Flow
+
+participant "Client" as Client
+participant "Primary\nMasterService" as PrimaryMS
+participant "OpLog\nManager" as OpLogMgr
+participant "Replication\nService" as RepSvc
+participant "Standby 1\nHotStandbyService" as Standby1
+participant "Standby 2\nHotStandbyService" as Standby2
+
+== Write Operation Generates OpLog ==
+
+Client -> PrimaryMS : PutStart(key="user:123:kv", size=4MB)
+activate PrimaryMS
+
+PrimaryMS -> PrimaryMS : 1. Allocate replica space\nSelect storage nodes
+
+PrimaryMS -> OpLogMgr : 2. Append(OpLogEntry)
+activate OpLogMgr
+
+note right of OpLogMgr
+    OpLogEntry {
+      sequence_id: 10001,
+      timestamp_ms: 1702300000000,
+      op_type: PUT_START,
+      object_key: "user:123:kv",
+      payload: serialized(replicas),
+      prefix_hash: CRC32("user:123"),
+      checksum: CRC32(payload)
+    }
+end note
+
+OpLogMgr --> PrimaryMS : Return seq_id=10001
+deactivate OpLogMgr
+
+PrimaryMS --> Client : Return allocated replica locations
+
+deactivate PrimaryMS
+
+== OpLog Async Push to Standby ==
+
+OpLogMgr -> RepSvc : 3. OnNewOpLog(entry)
+activate RepSvc
+
+par Parallel Push
+    RepSvc -> Standby1 : 4a. PushOpLog(entry)
+    activate Standby1
+    Standby1 -> Standby1 : Apply to local MetadataStore
+    Standby1 --> RepSvc : ACK(seq_id=10001)
+    deactivate Standby1
+also
+    RepSvc -> Standby2 : 4b. PushOpLog(entry)
+    activate Standby2
+    Standby2 -> Standby2 : Apply to local MetadataStore
+    Standby2 --> RepSvc : ACK(seq_id=10001)
+    deactivate Standby2
+end
+
+RepSvc -> RepSvc : 5. Update ACK status\nStandby1: 10001, Standby2: 10001
+
+deactivate RepSvc
+
+== Batch Sync Optimization ==
+
+note over PrimaryMS, Standby2
+    Batch Sync Strategy:
+    - Accumulate multiple OpLogs before batch send (batch_size=100)
+    - Or send immediately after timeout (timeout=10ms)
+    - Reduces network round trips
+end note
+
+Client -> PrimaryMS : PutEnd(key="user:123:kv")
+Client -> PrimaryMS : Put(key="user:456:kv", ...)
+Client -> PrimaryMS : Remove(key="user:789:kv")
+
+PrimaryMS -> OpLogMgr : Append(PUT_END, seq=10002)
+PrimaryMS -> OpLogMgr : Append(PUT_START, seq=10003)
+PrimaryMS -> OpLogMgr : Append(REMOVE, seq=10004)
+
+OpLogMgr -> RepSvc : OnNewOpLog (batch ready)
+activate RepSvc
+
+RepSvc -> Standby1 : BatchPushOpLog([10002, 10003, 10004])
+RepSvc -> Standby2 : BatchPushOpLog([10002, 10003, 10004])
+
+Standby1 --> RepSvc : BatchACK(last_seq=10004)
+Standby2 --> RepSvc : BatchACK(last_seq=10004)
+
+deactivate RepSvc
+
+== Synchronous Mode (Optional) ==
+
+note over Client, Standby2 #FFCCCC
+    Configurable synchronous replication mode (sync_replication=true):
+    - Write operations must wait for at least 1 Standby ACK
+    - Guarantees RPO=0, but increases write latency
+end note
+
+Client -> PrimaryMS : Put(key="critical:data", sync=true)
+activate PrimaryMS
+
+PrimaryMS -> OpLogMgr : Append(PUT_START, seq=10005)
+OpLogMgr -> RepSvc : PushOpLog(sync=true)
+activate RepSvc
+
+RepSvc -> Standby1 : PushOpLog
+activate Standby1
+Standby1 --> RepSvc : ACK
+deactivate Standby1
+
+RepSvc --> PrimaryMS : At least 1 ACK received
+deactivate RepSvc
+
+PrimaryMS --> Client : Write success
+deactivate PrimaryMS
+
+@enduml
+
+
+
+
+
+
+
+

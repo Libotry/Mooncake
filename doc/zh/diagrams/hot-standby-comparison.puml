@@ -1,0 +1,103 @@
+@startuml mode-comparison
+!theme plain
+title 三种高可用模式对比分析
+
+' ===== 快照模式 =====
+rectangle "快照模式 (Snapshot Only)" as Snapshot #FFB6C1 {
+    
+    card "工作原理" as S_How {
+        note as S_Note1
+            定期将内存元数据
+            序列化到持久存储
+        end note
+    }
+    
+    card "RPO: 分钟级" as S_RPO #FFCCCC
+    card "RTO: 秒~分钟" as S_RTO #FFCCCC
+    card "复杂度: 低" as S_Complexity #90EE90
+    card "开销: 低" as S_Overhead #90EE90
+}
+
+' ===== 热备模式 =====
+rectangle "热备模式 (Hot Standby)" as HotStandby #90EE90 {
+    
+    card "工作原理" as H_How {
+        note as H_Note1
+            OpLog 实时同步
+            + 定期核查机制
+        end note
+    }
+    
+    card "RPO: 秒级/零" as H_RPO #90EE90
+    card "RTO: <5秒" as H_RTO #90EE90
+    card "复杂度: 高" as H_Complexity #FFCCCC
+    card "开销: 中" as H_Overhead #FFE4B5
+}
+
+' ===== 混合模式 =====
+rectangle "混合模式 (Hybrid)" as Hybrid #87CEEB {
+    
+    card "工作原理" as M_How {
+        note as M_Note1
+            OpLog 实时同步
+            + 定期快照
+            + 核查机制
+        end note
+    }
+    
+    card "RPO: 秒级" as M_RPO #90EE90
+    card "RTO: <5秒" as M_RTO #90EE90
+    card "复杂度: 中高" as M_Complexity #FFE4B5
+    card "开销: 中" as M_Overhead #FFE4B5
+}
+
+' ===== 时间线对比 =====
+
+rectangle "故障恢复时间线对比" as Timeline {
+    
+    note as Timeline_Snapshot
+        **快照模式**
+        ════════════════════════════════►
+        │         │              │
+        T0        T1             T2
+        │         │              │
+        [快照]    [故障]         [恢复]
+        │    丢失数据 ──────────►│
+        │                        │
+        RPO = T1 - T0 (可能数分钟)
+        RTO = 加载快照时间 (取决于数据量)
+    end note
+    
+    note as Timeline_HotStandby
+        **热备模式**
+        ════════════════════════════════►
+        │ │ │ │ │ │ │ │ │ │ │ │ │
+        T0      ...               T1    T2
+        │ OpLog 持续同步 ─────────►│     │
+                                  │     │
+                              [故障]  [恢复]
+        RPO = 最后一批 OpLog 延迟 (~1秒)
+        RTO = 选举 + 安全窗口 (~5-10秒)
+    end note
+    
+    note as Timeline_Hybrid
+        **混合模式**
+        ════════════════════════════════►
+        │ │ │ │    │ │ │ │ │    │ │ │
+        T0  ...   [快照]  ...   T1    T2
+        │ OpLog ──►│ OpLog ────►│     │
+                                [故障] [恢复]
+        正常: RPO ~1秒, RTO ~5秒
+        冷启动: 从快照恢复 + OpLog 追赶
+    end note
+}
+
+@enduml
+
+
+
+
+
+
+
+

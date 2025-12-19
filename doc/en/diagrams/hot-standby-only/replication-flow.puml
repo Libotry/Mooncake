@@ -1,0 +1,112 @@
+@startuml replication-flow
+!theme plain
+title OpLog Replication Flow
+
+participant "Client" as Client
+participant "Primary\nMasterService" as PrimaryMS
+participant "OpLog\nManager" as OpLogMgr
+participant "Replication\nService" as RepSvc
+participant "Standby 1" as Standby1
+participant "Standby 2" as Standby2
+
+== Write Operation Generates OpLog ==
+
+Client -> PrimaryMS : PutStart(key="session:abc:kv", size=4MB)
+activate PrimaryMS
+
+PrimaryMS -> PrimaryMS : Allocate replicas\non storage nodes
+
+PrimaryMS -> OpLogMgr : Append(PUT_START, key, replicas)
+activate OpLogMgr
+
+note right of OpLogMgr #FFFACD
+  **OpLogEntry Created:**
+  {
+    sequence_id: 10001,
+    timestamp_ms: 1702300000000,
+    op_type: PUT_START,
+    object_key: "session:abc:kv",
+    payload: <serialized replicas>,
+    prefix_hash: CRC32("session:a"),
+    checksum: CRC32(payload)
+  }
+end note
+
+OpLogMgr --> PrimaryMS : seq_id = 10001
+deactivate OpLogMgr
+
+PrimaryMS --> Client : Return replica locations
+
+deactivate PrimaryMS
+
+== Async OpLog Broadcast ==
+
+OpLogMgr -> RepSvc : OnNewOpLog(entry)
+activate RepSvc
+
+par Parallel broadcast to all Standbys
+    RepSvc -> Standby1 : PushOpLog(entry)
+    activate Standby1
+    Standby1 -> Standby1 : Apply to\nMetadataStore
+    Standby1 --> RepSvc : ACK(seq=10001)
+    deactivate Standby1
+also
+    RepSvc -> Standby2 : PushOpLog(entry)
+    activate Standby2
+    Standby2 -> Standby2 : Apply to\nMetadataStore
+    Standby2 --> RepSvc : ACK(seq=10001)
+    deactivate Standby2
+end
+
+RepSvc -> RepSvc : Update ACK tracking:\nStandby1: 10001\nStandby2: 10001
+
+deactivate RepSvc
+
+== Batch Optimization ==
+
+note over PrimaryMS, Standby2 #E6E6FA
+  **Batching Strategy:**
+  • Accumulate entries until batch_size (100) OR
+  • Send on timeout (10ms) if partial batch
+  • Reduces network round trips
+  • Improves throughput
+end note
+
+Client -> PrimaryMS : PutEnd(key="session:abc:kv")
+Client -> PrimaryMS : Put(key="session:def:kv", ...)
+Client -> PrimaryMS : Remove(key="session:old:kv")
+
+PrimaryMS -> OpLogMgr : Append(PUT_END, seq=10002)
+PrimaryMS -> OpLogMgr : Append(PUT_START, seq=10003)
+PrimaryMS -> OpLogMgr : Append(REMOVE, seq=10004)
+
+OpLogMgr -> RepSvc : OnBatchReady([10002, 10003, 10004])
+activate RepSvc
+
+RepSvc -> Standby1 : BatchPush([10002, 10003, 10004])
+RepSvc -> Standby2 : BatchPush([10002, 10003, 10004])
+
+Standby1 --> RepSvc : BatchACK(last=10004)
+Standby2 --> RepSvc : BatchACK(last=10004)
+
+deactivate RepSvc
+
+== Error Handling ==
+
+note over RepSvc, Standby1 #FFCCCC
+  **On Standby Disconnect:**
+  1. Mark Standby as disconnected
+  2. On reconnect: Standby sends last_seq_id
+  3. Primary resends from that point
+  4. If seq_id too old: trigger full sync
+end note
+
+@enduml
+
+
+
+
+
+
+
+

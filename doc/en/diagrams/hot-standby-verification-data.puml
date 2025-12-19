@@ -1,0 +1,164 @@
+@startuml verification-data-structures
+!theme plain
+title Verification Mechanism Data Structures Explained
+
+' ===== Verification Request Data Structure =====
+package "Verification Request (Standby -> Primary)" {
+    
+    class VerificationRequest {
+        + uint32_t shard_id
+        + uint64_t standby_last_seq_id
+        + std::vector<VerificationEntry> entries
+        --
+        ~100 entries per verification round
+    }
+    
+    class VerificationEntry {
+        + uint32_t prefix_hash
+        + uint32_t checksum
+        --
+        Both prefix_hash and checksum
+        are 32-bit to save bandwidth
+    }
+    
+    VerificationRequest o-- "0..*" VerificationEntry
+    
+    note right of VerificationEntry
+        **prefix_hash Calculation**:
+        prefix_hash = CRC32(object_key.substr(0, 8))
+        
+        Why use prefix hash:
+        1. Save bandwidth (4 bytes vs variable-length key)
+        2. Support batch lookup
+        3. Low collision probability (~0.02% for 1B keys)
+        
+        **checksum Calculation**:
+        checksum = CRC32(serialize(ObjectMetadata))
+        
+        Includes: replicas, size, status, etc.
+        Excludes: lease_timeout (changes frequently)
+    end note
+}
+
+' ===== Verification Response Data Structure =====
+package "Verification Response (Primary -> Standby)" {
+    
+    enum VerificationStatus {
+        OK = 0
+        MISMATCH = 1
+        NEED_FULL_SYNC = 2
+    }
+    
+    class VerificationResponse {
+        + VerificationStatus status
+        + uint64_t primary_seq_id
+        + std::vector<MismatchEntry> mismatches
+        --
+        primary_seq_id used to track sync progress
+    }
+    
+    class MismatchEntry {
+        + uint32_t prefix_hash
+        + std::string object_key
+        + bytes correct_metadata
+        + MismatchType type
+        --
+        Contains complete correct data
+        for repairing Standby
+    }
+    
+    enum MismatchType {
+        CHECKSUM_MISMATCH
+        KEY_NOT_FOUND
+        EXTRA_KEY
+    }
+    
+    VerificationResponse --> VerificationStatus
+    VerificationResponse o-- "0..*" MismatchEntry
+    MismatchEntry --> MismatchType
+}
+
+' ===== ObjectMetadata for checksum calculation =====
+package "Checksum Calculation Scope" {
+    
+    class ObjectMetadata <<for checksum>> {
+        + std::vector<Replica> replicas
+        + size_t size
+        --
+        Following fields excluded from checksum:
+        - lease_timeout (changes dynamically)
+        - soft_pin_timeout (changes dynamically)
+    }
+    
+    class Replica <<included in checksum>> {
+        + ReplicaStatus status
+        + ReplicaData data
+    }
+    
+    class MemoryReplicaData {
+        + segment_name
+        + address
+        + size
+    }
+    
+    class DiskReplicaData {
+        + file_path
+        + object_size
+    }
+    
+    ObjectMetadata o-- "1..*" Replica
+    Replica --> MemoryReplicaData
+    Replica --> DiskReplicaData
+    
+    note bottom of ObjectMetadata
+        **Checksum Stability Design**:
+        
+        Only static fields included in checksum:
+        - replicas: Replica location information
+        - size: Object size
+        - status: Replica status
+        
+        Dynamic fields excluded:
+        - lease_timeout: Changes with every access
+        - soft_pin_timeout: Changes periodically
+        
+        This ensures the same object produces
+        identical checksum on Primary and Standby
+    end note
+}
+
+' ===== Verification Strategy Configuration =====
+package "Verification Strategy" {
+    
+    class VerificationConfig {
+        + uint32_t interval_sec = 30
+        + float sample_ratio = 0.1
+        + uint32_t entries_per_shard = 100
+        + uint32_t max_mismatches_for_repair = 10
+        + uint32_t seq_diff_threshold = 1000
+    }
+    
+    note right of VerificationConfig
+        **Verification Frequency Control**:
+        - One verification round every 30 seconds
+        - Each round checks 10% of Shards
+        - 5 minutes to complete full verification
+        
+        **Repair Threshold**:
+        - Inconsistent entries <= 10: Auto repair
+        - Inconsistent entries > 10: Trigger full sync
+        
+        **Sync Gap Threshold**:
+        - seq_diff > 1000: Return NEED_FULL_SYNC
+    end note
+}
+
+@enduml
+
+
+
+
+
+
+
+
