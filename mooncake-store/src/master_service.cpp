@@ -2,8 +2,8 @@
 
 #include <cassert>
 #include <cstdint>
-#include <shared_mutex>
 #include <regex>
+#include <shared_mutex>
 #include <ylt/util/tl/expected.hpp>
 
 #include "master_metric_manager.h"
@@ -212,6 +212,8 @@ auto MasterService::ExistKey(const std::string& key)
             // client.
             metadata.GrantLease(default_kv_lease_ttl_,
                                 default_kv_soft_pin_ttl_);
+            // Record lease renewal for standby synchronization.
+            oplog_manager_.Append(OpType::LEASE_RENEW, key);
             return true;
         }
     }
@@ -300,6 +302,8 @@ auto MasterService::GetReplicaListByRegex(const std::string& regex_pattern)
                 results.emplace(key, std::move(replica_list));
                 metadata.GrantLease(default_kv_lease_ttl_,
                                     default_kv_soft_pin_ttl_);
+                // Record lease renewal for standby synchronization.
+                oplog_manager_.Append(OpType::LEASE_RENEW, key);
             }
         }
     }
@@ -332,6 +336,8 @@ auto MasterService::GetReplicaList(std::string_view key)
     // Grant a lease to the object so it will not be removed
     // when the client is reading it.
     metadata.GrantLease(default_kv_lease_ttl_, default_kv_soft_pin_ttl_);
+    // Record lease renewal for standby synchronization.
+    oplog_manager_.Append(OpType::LEASE_RENEW, std::string(key));
 
     return GetReplicaListResponse(std::move(replica_list),
                                   default_kv_lease_ttl_);
@@ -442,6 +448,12 @@ auto MasterService::PutEnd(const std::string& key, ReplicaType replica_type)
     // at beginning. 2. If this object has soft pin enabled, set it to be soft
     // pinned.
     metadata.GrantLease(0, default_kv_soft_pin_ttl_);
+
+    // Record OpLog entry for PUT_END so that standbys can replay this change.
+    // For now we do not include extra payload; it can be extended later if
+    // needed (e.g. to carry replica descriptors).
+    oplog_manager_.Append(OpType::PUT_END, key);
+
     return {};
 }
 
@@ -464,6 +476,10 @@ auto MasterService::PutRevoke(const std::string& key, ReplicaType replica_type)
     if (metadata.IsValid() == false) {
         accessor.Erase();
     }
+
+    // Log the revoke operation so that standbys can roll back their metadata.
+    oplog_manager_.Append(OpType::PUT_REVOKE, key);
+
     return {};
 }
 
@@ -509,6 +525,10 @@ auto MasterService::Remove(const std::string& key)
 
     // Remove object metadata
     accessor.Erase();
+
+    // Log explicit remove so that standbys can delete the same key.
+    oplog_manager_.Append(OpType::REMOVE, key);
+
     return {};
 }
 
