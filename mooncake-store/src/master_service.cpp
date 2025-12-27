@@ -2,14 +2,17 @@
 
 #include <cassert>
 #include <cstdint>
-#include <shared_mutex>
 #include <regex>
 #include <unordered_set>
+#include <shared_mutex>
 #include <ylt/util/tl/expected.hpp>
 
+#include "etcd_helper.h"
+#include "etcd_oplog_store.h"
 #include "master_metric_manager.h"
 #include "segment.h"
 #include "types.h"
+// replication_service.h removed - using etcd-based OpLog sync instead
 
 namespace mooncake {
 
@@ -72,6 +75,41 @@ MasterService::MasterService(const MasterServiceConfig& config)
         MasterMetricManager::instance().inc_total_file_capacity(
             global_file_segment_size_);
     }
+
+    // Initialize EtcdOpLogStore if HA is enabled
+    // Note: This requires STORE_USE_ETCD to be enabled at compile time
+    // Note: etcd connection should be established before MasterService construction
+    // (e.g., in MasterServiceSupervisor), so we can use the existing connection
+#ifdef STORE_USE_ETCD
+    if (enable_ha_ && !cluster_id_.empty()) {
+        // Try to create EtcdOpLogStore - if etcd is not connected, operations will fail
+        // but we can still use memory buffer as fallback
+        auto etcd_oplog_store =
+            std::make_shared<EtcdOpLogStore>(cluster_id_);
+        oplog_manager_.SetEtcdOpLogStore(etcd_oplog_store);
+        LOG(INFO) << "EtcdOpLogStore initialized for cluster_id="
+                  << cluster_id_ << " (etcd connection should be established "
+                  << "before MasterService construction)";
+    } else if (enable_ha_) {
+        LOG(WARNING) << "HA mode enabled but cluster_id is empty, "
+                        "OpLog will only be stored in memory buffer";
+    }
+#else
+    if (enable_ha_) {
+        LOG(WARNING) << "HA mode enabled but STORE_USE_ETCD is not enabled at "
+                        "compile time, OpLog will only be stored in memory buffer. "
+                        "Recompile with -DSTORE_USE_ETCD=ON to enable etcd support.";
+    }
+#endif
+}
+
+// Helper function to append OpLog entry
+// Note: In the new etcd-based design, OpLog will be written to etcd by EtcdOpLogStore
+// This method only appends to OpLogManager's buffer for now
+void MasterService::AppendOpLogAndNotify(OpType type, const std::string& key,
+                                         const std::string& payload) {
+    oplog_manager_.Append(type, key, payload);
+    // TODO: In Phase 1, integrate with EtcdOpLogStore to write to etcd
 }
 
 MasterService::~MasterService() {
@@ -231,6 +269,9 @@ auto MasterService::ExistKey(const std::string& key)
             // client.
             metadata.GrantLease(default_kv_lease_ttl_,
                                 default_kv_soft_pin_ttl_);
+            // Note: LEASE_RENEW is not recorded in OpLog since Standby does not
+            // perform eviction. Standby will receive DELETE events from Primary
+            // when objects are evicted.
             return true;
         }
     }
@@ -501,6 +542,9 @@ auto MasterService::GetReplicaListByRegex(const std::string& regex_pattern)
                 results.emplace(key, std::move(replica_list));
                 metadata.GrantLease(default_kv_lease_ttl_,
                                     default_kv_soft_pin_ttl_);
+                // Note: LEASE_RENEW is not recorded in OpLog since Standby does not
+                // perform eviction. Standby will receive DELETE events from Primary
+                // when objects are evicted.
             }
         }
     }
@@ -542,6 +586,9 @@ auto MasterService::GetReplicaList(std::string_view key)
     // Grant a lease to the object so it will not be removed
     // when the client is reading it.
     metadata.GrantLease(default_kv_lease_ttl_, default_kv_soft_pin_ttl_);
+    // Note: LEASE_RENEW is not recorded in OpLog since Standby does not
+    // perform eviction. Standby will receive DELETE events from Primary
+    // when objects are evicted.
 
     return GetReplicaListResponse(std::move(replica_list),
                                   default_kv_lease_ttl_);
@@ -696,6 +743,12 @@ auto MasterService::PutEnd(const UUID& client_id, const std::string& key,
     // at beginning. 2. If this object has soft pin enabled, set it to be soft
     // pinned.
     metadata.GrantLease(0, default_kv_soft_pin_ttl_);
+
+    // Record OpLog entry for PUT_END so that standbys can replay this change.
+    // For now we do not include extra payload; it can be extended later if
+    // needed (e.g. to carry replica descriptors).
+    AppendOpLogAndNotify(OpType::PUT_END, key);
+
     return {};
 }
 
@@ -776,6 +829,10 @@ auto MasterService::PutRevoke(const UUID& client_id, const std::string& key,
     if (metadata.IsValid() == false) {
         accessor.Erase();
     }
+
+    // Log the revoke operation so that standbys can roll back their metadata.
+    AppendOpLogAndNotify(OpType::PUT_REVOKE, key);
+
     return {};
 }
 
@@ -821,6 +878,10 @@ auto MasterService::Remove(const std::string& key)
 
     // Remove object metadata
     accessor.Erase();
+
+    // Log explicit remove so that standbys can delete the same key.
+    AppendOpLogAndNotify(OpType::REMOVE, key);
+
     return {};
 }
 
@@ -1558,5 +1619,11 @@ std::string MasterService::ResolvePath(const std::string& key) const {
 
     return full_path.lexically_normal().string();
 }
+
+OpLogManager& MasterService::GetOpLogManager() {
+    return oplog_manager_;
+}
+
+// SetReplicationService removed - using etcd-based OpLog sync instead
 
 }  // namespace mooncake

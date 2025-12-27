@@ -1,0 +1,105 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "oplog_manager.h"
+
+namespace mooncake {
+
+// Forward declaration
+class OpLogApplier;
+
+/**
+ * @brief Watch etcd for OpLog changes and apply them to Standby
+ *
+ * This class watches etcd for new OpLog entries and forwards them
+ * to OpLogApplier for processing.
+ */
+class OpLogWatcher {
+   public:
+    /**
+     * @brief Constructor
+     * @param etcd_endpoints Comma-separated etcd endpoints
+     * @param cluster_id Cluster identifier
+     * @param applier OpLog applier to process entries
+     */
+    OpLogWatcher(const std::string& etcd_endpoints,
+                 const std::string& cluster_id, OpLogApplier* applier);
+
+    ~OpLogWatcher();
+
+    /**
+     * @brief Start watching etcd for OpLog changes
+     */
+    void Start();
+
+    /**
+     * @brief Stop watching
+     */
+    void Stop();
+
+    /**
+     * @brief Read OpLog entries from etcd since a given sequence ID
+     * @param start_seq_id Starting sequence ID (exclusive)
+     * @param entries Output vector of OpLog entries
+     * @return true on success, false on failure
+     */
+    bool ReadOpLogSince(uint64_t start_seq_id,
+                        std::vector<OpLogEntry>& entries);
+
+    /**
+     * @brief Get the last processed sequence ID
+     * @return Last processed sequence ID
+     */
+    uint64_t GetLastProcessedSequenceId() const;
+
+   private:
+    /**
+     * @brief Static callback function for etcd Watch
+     * @param context OpLogWatcher instance (passed as void*)
+     * @param key etcd key
+     * @param key_size key size
+     * @param value etcd value
+     * @param value_size value size
+     * @param event_type event type (0 = PUT, 1 = DELETE)
+     */
+    static void WatchCallback(void* context, const char* key, size_t key_size,
+                              const char* value, size_t value_size, int event_type);
+
+    /**
+     * @brief Watch etcd OpLog changes (runs in background thread)
+     */
+    void WatchOpLog();
+
+    /**
+     * @brief Process a Watch event
+     * @param key etcd key
+     * @param value etcd value (JSON string for PUT events, empty for DELETE events)
+     * @param event_type Event type (0 = PUT, 1 = DELETE)
+     */
+    void HandleWatchEvent(const std::string& key, const std::string& value,
+                          int event_type);
+
+    /**
+     * @brief Deserialize OpLogEntry from JSON string
+     * @param json_str JSON string
+     * @param entry Output OpLog entry
+     * @return true on success, false on failure
+     */
+    bool DeserializeOpLogEntry(const std::string& json_str, OpLogEntry& entry);
+
+    std::string etcd_endpoints_;
+    std::string cluster_id_;
+    OpLogApplier* applier_;
+    std::atomic<bool> running_{false};
+    std::thread watch_thread_;
+    std::atomic<uint64_t> last_processed_sequence_id_{0};
+};
+
+}  // namespace mooncake
+

@@ -13,6 +13,11 @@
 #include "rpc_types.h"
 #include "master_config.h"
 
+// Forward declaration
+namespace mooncake {
+// ReplicationService forward declaration removed - using etcd-based OpLog sync instead
+}
+
 namespace mooncake {
 
 extern const uint64_t kMetricReportIntervalSeconds;
@@ -109,11 +114,15 @@ class WrappedMasterService {
         const UUID& client_id, const std::vector<std::string>& keys,
         const std::vector<StorageObjectMetadata>& metadatas);
 
+    // GetReplicationService removed - using etcd-based OpLog sync instead
+
    private:
     MasterService master_service_;
     std::thread metric_report_thread_;
     coro_http::coro_http_server http_server_;
     std::atomic<bool> metric_report_running_;
+    
+    // ReplicationService removed - using etcd-based OpLog sync instead
 };
 
 void RegisterRpcService(coro_rpc::coro_rpc_server& server,

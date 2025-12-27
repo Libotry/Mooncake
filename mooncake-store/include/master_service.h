@@ -25,11 +25,13 @@
 #include "master_config.h"
 #include "rpc_types.h"
 #include "replica.h"
+#include "oplog_manager.h"
 
 namespace mooncake {
 // Forward declarations
 class AllocationStrategy;
 class EvictionStrategy;
+// ReplicationService forward declaration removed - using etcd-based OpLog sync instead
 
 /*
  * @brief MasterService is the main class for the master server.
@@ -272,6 +274,14 @@ class MasterService {
     tl::expected<GetStorageConfigResponse, ErrorCode> GetStorageConfig() const;
 
     /**
+     * @brief Get OpLogManager reference for external access
+     * @return Reference to the OpLogManager instance
+     */
+    OpLogManager& GetOpLogManager();
+
+    // SetReplicationService removed - using etcd-based OpLog sync instead
+
+    /**
      * @brief Mounts a file storage segment into the master.
      * @param enable_offloading If true, enables offloading (write-to-file).
      */
@@ -301,6 +311,15 @@ class MasterService {
         -> tl::expected<void, ErrorCode>;
 
    private:
+    /**
+     * @brief Helper function to append OpLog entry
+     * @param type Operation type
+     * @param key Object key
+     * @param payload Optional payload data
+     */
+    void AppendOpLogAndNotify(OpType type, const std::string& key,
+                             const std::string& payload = std::string());
+
     // Resolve the key to a sanitized format for storage
     std::string SanitizeKey(const std::string& key) const;
     std::string ResolvePath(const std::string& key) const;
@@ -631,6 +650,13 @@ class MasterService {
     // Segment management
     SegmentManager segment_manager_;
     BufferAllocatorType memory_allocator_type_;
+
+    // Operation log manager for hot-standby replication. It records
+    // state-changing operations so that a standby master can replay them.
+    OpLogManager oplog_manager_;
+    
+    // ReplicationService removed - using etcd-based OpLog sync instead
+    
     std::shared_ptr<AllocationStrategy> allocation_strategy_;
 
     // Discarded replicas management
