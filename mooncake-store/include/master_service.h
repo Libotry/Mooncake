@@ -781,6 +781,7 @@ class MasterService {
     std::deque<PendingMutation> pending_mutations_;
     std::atomic<bool> pending_mutations_running_{false};
     std::thread pending_mutations_thread_;
+    static constexpr size_t kMaxPendingMutations = 10000;  // Max queue size to prevent unbounded growth
 
     // Discarded replicas management
     const std::chrono::seconds put_start_discard_timeout_sec_;

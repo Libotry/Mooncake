@@ -10,6 +10,7 @@
 #include "etcd_helper.h"
 #include "etcd_oplog_store.h"
 #include "oplog_applier.h"
+#include "oplog_manager.h"
 
 #if __has_include(<jsoncpp/json/json.h>)
 #include <jsoncpp/json/json.h>  // Ubuntu
@@ -337,6 +338,15 @@ void OpLogWatcher::HandleWatchEvent(const std::string& key, const std::string& v
     OpLogEntry entry;
     if (!DeserializeOpLogEntry(value, entry)) {
         LOG(ERROR) << "Failed to deserialize OpLog entry from key: " << key;
+        consecutive_errors_.fetch_add(1);
+        return;
+    }
+
+    // Verify checksum to detect data corruption or tampering.
+    if (!OpLogManager::VerifyChecksum(entry)) {
+        LOG(ERROR) << "OpLog entry checksum mismatch: sequence_id=" << entry.sequence_id
+                   << ", key=" << entry.object_key
+                   << ". Possible data corruption or tampering. Discarding entry.";
         consecutive_errors_.fetch_add(1);
         return;
     }

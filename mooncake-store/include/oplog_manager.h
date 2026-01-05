@@ -103,6 +103,10 @@ class OpLogManager {
     static uint64_t NowMs();
     static uint32_t ComputeChecksum(const std::string& data);
     static uint32_t ComputePrefixHash(const std::string& key);
+    
+    // Verify checksum of an OpLogEntry payload.
+    // Returns true if checksum matches, false otherwise.
+    static bool VerifyChecksum(const OpLogEntry& entry);
 
     mutable std::shared_mutex mutex_;
     std::deque<OpLogEntry> buffer_;

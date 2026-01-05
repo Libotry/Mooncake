@@ -8,6 +8,7 @@
 
 #include "etcd_oplog_store.h"
 #include "metadata_store.h"
+#include "oplog_manager.h"
 
 namespace mooncake {
 
@@ -335,10 +336,14 @@ OpLogApplier::GapResolveResult OpLogApplier::TryResolveGapsOnceForPromotion(
     gap_ids.erase(std::unique(gap_ids.begin(), gap_ids.end()), gap_ids.end());
 
     r.attempted = gap_ids.size();
+    std::vector<uint64_t> successfully_processed;
     for (uint64_t seq : gap_ids) {
         OpLogEntry e;
         ErrorCode err = store->ReadOpLog(seq, e);
         if (err != ErrorCode::OK) {
+            // Log failed gap for monitoring, but don't clear it so it can be retried later.
+            LOG(WARNING) << "Promotion gap resolve: failed to fetch seq=" << seq
+                         << ", err=" << static_cast<int>(err);
             continue;
         }
         r.fetched++;
@@ -347,16 +352,23 @@ OpLogApplier::GapResolveResult OpLogApplier::TryResolveGapsOnceForPromotion(
         if (e.op_type == OpType::REMOVE) {
             ApplyRemove(e);
             r.applied_deletes++;
+            successfully_processed.push_back(seq);
         } else if (e.op_type == OpType::PUT_REVOKE) {
             ApplyPutRevoke(e);
             r.applied_deletes++;
+            successfully_processed.push_back(seq);
+        } else {
+            // PUT_END or others: mark as processed (dropped) so we don't retry.
+            successfully_processed.push_back(seq);
         }
     }
 
-    // Clear gaps we attempted so promotion won't keep retrying them.
-    {
+    // Only clear gaps we successfully fetched and processed.
+    // Failed gaps remain in missing_sequence_ids_/skipped_sequence_ids_ for potential
+    // retry or monitoring.
+    if (!successfully_processed.empty()) {
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        for (uint64_t seq : gap_ids) {
+        for (uint64_t seq : successfully_processed) {
             missing_sequence_ids_.erase(seq);
             skipped_sequence_ids_.erase(seq);
         }
@@ -469,6 +481,14 @@ bool OpLogApplier::RequestMissingOpLog(uint64_t missing_seq_id) {
     if (err != ErrorCode::OK) {
         LOG(ERROR) << "OpLogApplier: failed to read missing OpLog from etcd, sequence_id="
                    << missing_seq_id << ", error=" << static_cast<int>(err);
+        return false;
+    }
+
+    // Verify checksum before adding to pending entries.
+    if (!OpLogManager::VerifyChecksum(entry)) {
+        LOG(ERROR) << "OpLogApplier: checksum mismatch for retrieved missing entry, sequence_id="
+                   << missing_seq_id << ", key=" << entry.object_key
+                   << ". Possible data corruption. Discarding entry.";
         return false;
     }
 

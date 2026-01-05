@@ -381,6 +381,14 @@ void MasterService::EnqueuePendingMutation(PendingMutation m) {
     m.next_retry_at = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lg(pending_mutations_mutex_);
+        if (pending_mutations_.size() >= kMaxPendingMutations) {
+            // Queue full: drop oldest mutation to prevent unbounded growth.
+            // Log warning for monitoring.
+            LOG(WARNING) << "PendingMutation queue full (size=" << pending_mutations_.size()
+                         << "), dropping oldest mutation. key=" << pending_mutations_.front().key
+                         << ", seq=" << pending_mutations_.front().oplog_entry.sequence_id;
+            pending_mutations_.pop_front();
+        }
         pending_mutations_.push_back(std::move(m));
     }
     pending_mutations_cv_.notify_one();

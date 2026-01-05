@@ -142,6 +142,11 @@ uint32_t OpLogManager::ComputePrefixHash(const std::string& key) {
     return static_cast<uint32_t>(XXH32(key.data(), key.size(), 0));
 }
 
+bool OpLogManager::VerifyChecksum(const OpLogEntry& entry) {
+    uint32_t computed = ComputeChecksum(entry.payload);
+    return computed == entry.checksum;
+}
+
 }  // namespace mooncake
 
 
