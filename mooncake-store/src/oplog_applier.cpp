@@ -183,7 +183,7 @@ size_t OpLogApplier::ProcessPendingEntries() {
 
             const auto waited = std::chrono::duration_cast<std::chrono::seconds>(now - it->second);
 
-            // Skip after 3s to avoid global stall (user requested behavior).
+            // Skip after timeout to avoid global stall (user requested behavior).
             if (waited.count() >= kMissingEntrySkipSeconds) {
                 skipped_sequence_ids_[missing_seq] = now;
                 missing_sequence_ids_.erase(missing_seq);
@@ -192,9 +192,10 @@ size_t OpLogApplier::ProcessPendingEntries() {
                 continue;  // may skip multiple consecutive gaps
             }
 
-            // Optionally request from etcd after a longer wait (best-effort).
-            if (waited.count() >= kMissingEntryWaitSeconds) {
+            // Best-effort request from etcd (before skip triggers).
+            if (waited.count() >= kMissingEntryRequestSeconds) {
                 missing_seq_to_request = missing_seq;
+                break;
             }
             break;
         }
@@ -496,7 +497,7 @@ void OpLogApplier::ScheduleWaitForMissingEntries(uint64_t missing_seq_id) {
     // The actual waiting and requesting is handled in ProcessPendingEntries().
     // We just log it here for tracking.
     VLOG(1) << "OpLogApplier: scheduling wait for missing sequence_id=" << missing_seq_id
-            << ", will request after " << kMissingEntryWaitSeconds << " seconds";
+            << ", will request after " << kMissingEntryRequestSeconds << " seconds";
 }
 
 }  // namespace mooncake

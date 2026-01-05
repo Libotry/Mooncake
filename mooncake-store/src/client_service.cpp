@@ -175,7 +175,30 @@ tl::expected<void, ErrorCode> CheckRegisterMemoryParams(const void* addr,
 
 ErrorCode Client::ConnectToMaster(const std::string& master_server_entry) {
     if (master_server_entry.find("etcd://") == 0) {
+        // Support optional cluster_id in connection string:
+        //   etcd://<endpoints>?cluster_id=<cluster_id>
+        // If not provided, MasterViewHelper will fall back to env MC_STORE_CLUSTER_ID,
+        // then DEFAULT_CLUSTER_ID.
         std::string etcd_entry = master_server_entry.substr(strlen("etcd://"));
+        std::string cluster_id;
+        {
+            const size_t qpos = etcd_entry.find('?');
+            if (qpos != std::string::npos) {
+                const std::string query = etcd_entry.substr(qpos + 1);
+                etcd_entry = etcd_entry.substr(0, qpos);
+                const std::string k = "cluster_id=";
+                const size_t kpos = query.find(k);
+                if (kpos != std::string::npos) {
+                    const size_t vpos = kpos + k.size();
+                    size_t vend = query.find('&', vpos);
+                    if (vend == std::string::npos) vend = query.size();
+                    cluster_id = query.substr(vpos, vend - vpos);
+                }
+            }
+        }
+        if (!cluster_id.empty()) {
+            master_view_helper_.SetClusterId(cluster_id);
+        }
 
         // Get master address from etcd
         auto err = master_view_helper_.ConnectToEtcd(etcd_entry);

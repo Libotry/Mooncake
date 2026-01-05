@@ -53,11 +53,25 @@ ErrorCode EtcdOpLogStore::WriteOpLog(const OpLogEntry& entry) {
     std::string key = BuildOpLogKey(entry.sequence_id);
     std::string value = SerializeOpLogEntry(entry);
 
-    ErrorCode err = EtcdHelper::Put(key.c_str(), key.size(), value.c_str(),
-                                    value.size());
+    // Fence: never overwrite an existing OpLog key.
+    // - If this is a retry of the same entry: key exists with same value => OK.
+    // - If key exists with different value: conflict => error (signals seq regression / bug).
+    ErrorCode err = EtcdHelper::Create(key.c_str(), key.size(), value.c_str(), value.size());
+    if (err == ErrorCode::ETCD_TRANSACTION_FAIL) {
+        std::string existing;
+        EtcdRevisionId rev = 0;
+        ErrorCode get_err = EtcdHelper::Get(key.c_str(), key.size(), existing, rev);
+        if (get_err == ErrorCode::OK && existing == value) {
+            // Idempotent retry.
+            err = ErrorCode::OK;
+        } else {
+            LOG(ERROR) << "OpLog key conflict: seq=" << entry.sequence_id
+                       << ", get_err=" << get_err;
+            return ErrorCode::ETCD_OPERATION_ERROR;
+        }
+    }
     if (err != ErrorCode::OK) {
-        LOG(ERROR) << "Failed to write OpLog entry, sequence_id="
-                   << entry.sequence_id;
+        LOG(ERROR) << "Failed to write OpLog entry, sequence_id=" << entry.sequence_id;
         return err;
     }
 
@@ -230,6 +244,15 @@ ErrorCode EtcdOpLogStore::GetLatestSequenceId(uint64_t& sequence_id) {
     return ErrorCode::OK;
 }
 
+ErrorCode EtcdOpLogStore::GetMaxSequenceId(uint64_t& sequence_id) {
+    auto max_seq_opt = GetMaxSequenceIdInternal();
+    if (!max_seq_opt.has_value()) {
+        return ErrorCode::ETCD_KEY_NOT_EXIST;
+    }
+    sequence_id = max_seq_opt.value();
+    return ErrorCode::OK;
+}
+
 ErrorCode EtcdOpLogStore::UpdateLatestSequenceId(uint64_t sequence_id) {
     std::string key = BuildLatestKey();
     std::string value = std::to_string(sequence_id);
@@ -318,6 +341,29 @@ std::optional<uint64_t> EtcdOpLogStore::GetMinSequenceId() const {
         return std::nullopt;
     }
     std::string seq_str = first_key.substr(pos + 1);
+    try {
+        return static_cast<uint64_t>(std::stoull(seq_str));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<uint64_t> EtcdOpLogStore::GetMaxSequenceIdInternal() const {
+    // Entry keys are fixed-width 20-digit numbers, which (in practice) start with '0'.
+    // Use "/0" to avoid picking up "/latest" which is lexicographically after digits.
+    std::string prefix = std::string(kOpLogPrefix) + cluster_id_ + "/0";
+    std::string last_key;
+    ErrorCode err =
+        EtcdHelper::GetLastKeyWithPrefix(prefix.c_str(), prefix.size(), last_key);
+    if (err != ErrorCode::OK) {
+        return std::nullopt;
+    }
+
+    size_t pos = last_key.rfind('/');
+    if (pos == std::string::npos || pos + 1 >= last_key.size()) {
+        return std::nullopt;
+    }
+    std::string seq_str = last_key.substr(pos + 1);
     try {
         return static_cast<uint64_t>(std::stoull(seq_str));
     } catch (...) {

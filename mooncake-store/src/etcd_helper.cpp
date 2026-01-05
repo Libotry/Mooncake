@@ -167,6 +167,24 @@ ErrorCode EtcdHelper::Put(const char* key, const size_t key_size,
     return ErrorCode::OK;
 }
 
+ErrorCode EtcdHelper::Create(const char* key, const size_t key_size,
+                             const char* value, const size_t value_size) {
+    char* err_msg = nullptr;
+    int ret = EtcdStoreCreateWrapper((char*)key, (int)key_size, (char*)value,
+                                     (int)value_size, &err_msg);
+    if (ret == -2) {
+        free(err_msg);
+        return ErrorCode::ETCD_TRANSACTION_FAIL;
+    }
+    if (ret != 0) {
+        LOG(ERROR) << "key=" << std::string(key, key_size)
+                   << ", error=" << err_msg;
+        free(err_msg);
+        return ErrorCode::ETCD_OPERATION_ERROR;
+    }
+    return ErrorCode::OK;
+}
+
 ErrorCode EtcdHelper::GetWithPrefix(const char* prefix, const size_t prefix_size,
                                      std::vector<std::string>& keys,
                                      std::vector<std::string>& values) {
@@ -224,6 +242,30 @@ ErrorCode EtcdHelper::GetFirstKeyWithPrefix(const char* prefix,
     }
     first_key = std::string(first_key_ptr, first_key_size);
     free(first_key_ptr);
+    return ErrorCode::OK;
+}
+
+ErrorCode EtcdHelper::GetLastKeyWithPrefix(const char* prefix,
+                                           const size_t prefix_size,
+                                           std::string& last_key) {
+    char* err_msg = nullptr;
+    char* last_key_ptr = nullptr;
+    int last_key_size = 0;
+    int ret = EtcdStoreGetLastKeyWithPrefixWrapper((char*)prefix, (int)prefix_size,
+                                                   &last_key_ptr, &last_key_size,
+                                                   &err_msg);
+    if (ret == -2) {
+        free(err_msg);
+        return ErrorCode::ETCD_KEY_NOT_EXIST;
+    }
+    if (ret != 0) {
+        LOG(ERROR) << "prefix=" << std::string(prefix, prefix_size)
+                   << ", error=" << err_msg;
+        free(err_msg);
+        return ErrorCode::ETCD_OPERATION_ERROR;
+    }
+    last_key = std::string(last_key_ptr, last_key_size);
+    free(last_key_ptr);
     return ErrorCode::OK;
 }
 
@@ -352,6 +394,16 @@ ErrorCode EtcdHelper::Put(const char* key, const size_t key_size,
     return ErrorCode::ETCD_OPERATION_ERROR;
 }
 
+ErrorCode EtcdHelper::Create(const char* key, const size_t key_size,
+                             const char* value, const size_t value_size) {
+    (void)key;
+    (void)key_size;
+    (void)value;
+    (void)value_size;
+    LOG(FATAL) << "Etcd is not enabled in compilation";
+    return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
 ErrorCode EtcdHelper::GetWithPrefix(const char* prefix, const size_t prefix_size,
                                      std::vector<std::string>& keys,
                                      std::vector<std::string>& values) {
@@ -379,6 +431,16 @@ ErrorCode EtcdHelper::GetRangeAsJson(const char* start_key,
 ErrorCode EtcdHelper::GetFirstKeyWithPrefix(const char* prefix,
                                              const size_t prefix_size,
                                              std::string& first_key) {
+    LOG(FATAL) << "Etcd is not enabled in compilation";
+    return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
+ErrorCode EtcdHelper::GetLastKeyWithPrefix(const char* prefix,
+                                           const size_t prefix_size,
+                                           std::string& last_key) {
+    (void)prefix;
+    (void)prefix_size;
+    (void)last_key;
     LOG(FATAL) << "Etcd is not enabled in compilation";
     return ErrorCode::ETCD_OPERATION_ERROR;
 }

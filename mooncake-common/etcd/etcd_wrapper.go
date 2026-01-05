@@ -164,11 +164,14 @@ func NewStoreEtcdClient(endpoints *C.char, errMsg **C.char) int {
 	}
 
 	endpointStr := C.GoString(endpoints)
+	// Support multiple endpoints separated by comma or semicolon.
+	endpointStr = strings.ReplaceAll(endpointStr, ",", ";")
 	endpointList := strings.Split(endpointStr, ";")
 
 	// Filter out any empty strings that might result from splitting
 	var validEndpoints []string
 	for _, ep := range endpointList {
+		ep = strings.TrimSpace(ep)
 		if ep != "" {
 			validEndpoints = append(validEndpoints, ep)
 		}
@@ -448,6 +451,38 @@ func EtcdStorePutWrapper(key *C.char, keySize C.int, value *C.char, valueSize C.
 	return 0
 }
 
+// Create key if absent (CAS on CreateRevision==0).
+// Return:
+// - 0 on success
+// - -2 if key already exists
+// - -1 on error
+//
+//export EtcdStoreCreateWrapper
+func EtcdStoreCreateWrapper(key *C.char, keySize C.int, value *C.char, valueSize C.int, errMsg **C.char) int {
+	if storeClient == nil {
+		*errMsg = C.CString("etcd client not initialized")
+		return -1
+	}
+	k := C.GoStringN(key, keySize)
+	v := C.GoStringN(value, valueSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	txn := storeClient.Txn(ctx)
+	resp, err := txn.If(clientv3.Compare(clientv3.CreateRevision(k), "=", 0)).
+		Then(clientv3.OpPut(k, v)).
+		Commit()
+	if err != nil {
+		*errMsg = C.CString(err.Error())
+		return -1
+	}
+	if resp.Succeeded {
+		return 0
+	}
+	*errMsg = C.CString("key already exists")
+	return -2
+}
+
 //export EtcdStoreGetWithPrefixWrapper
 func EtcdStoreGetWithPrefixWrapper(prefix *C.char, prefixSize C.int, keys **C.char, keySizes **C.int, values **C.char, valueSizes **C.int, count *C.int, errMsg **C.char) int {
 	if storeClient == nil {
@@ -564,6 +599,36 @@ func EtcdStoreGetFirstKeyWithPrefixWrapper(prefix *C.char, prefixSize C.int, fir
 	kv := resp.Kvs[0]
 	*firstKey = C.CString(string(kv.Key))
 	*firstKeySize = C.int(len(kv.Key))
+	return 0
+}
+
+//export EtcdStoreGetLastKeyWithPrefixWrapper
+func EtcdStoreGetLastKeyWithPrefixWrapper(prefix *C.char, prefixSize C.int, lastKey **C.char, lastKeySize *C.int, errMsg **C.char) int {
+	if storeClient == nil {
+		*errMsg = C.CString("etcd client not initialized")
+		return -1
+	}
+	p := C.GoStringN(prefix, prefixSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := storeClient.Get(
+		ctx, p,
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortDescend),
+		clientv3.WithLimit(1),
+	)
+	if err != nil {
+		*errMsg = C.CString(err.Error())
+		return -1
+	}
+	if len(resp.Kvs) == 0 {
+		*errMsg = C.CString("no key found with prefix")
+		return -2
+	}
+	kv := resp.Kvs[0]
+	*lastKey = C.CString(string(kv.Key))
+	*lastKeySize = C.int(len(kv.Key))
 	return 0
 }
 

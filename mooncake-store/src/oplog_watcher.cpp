@@ -47,14 +47,14 @@ bool OpLogWatcher::StartFromSequenceId(uint64_t start_seq_id) {
     }
 
 #ifdef STORE_USE_ETCD
-    uint64_t cursor_seq = start_seq_id;
+    uint64_t read_seq_id = start_seq_id;
     EtcdRevisionId last_read_rev = 0;
     size_t total_applied = 0;
 
     for (;;) {
         std::vector<OpLogEntry> batch;
         EtcdRevisionId rev = 0;
-        if (!ReadOpLogSince(cursor_seq, batch, rev)) {
+        if (!ReadOpLogSince(read_seq_id, batch, rev)) {
             last_read_rev = 0;
             break;
         }
@@ -63,7 +63,7 @@ bool OpLogWatcher::StartFromSequenceId(uint64_t start_seq_id) {
             for (const auto& e : batch) {
                 if (applier_->ApplyOpLogEntry(e)) {
                     last_processed_sequence_id_.store(e.sequence_id);
-                    cursor_seq = e.sequence_id;
+                    read_seq_id = e.sequence_id;
                     total_applied++;
                 }
             }

@@ -104,6 +104,14 @@ class EtcdHelper {
                          const char* value, const size_t value_size);
 
     /*
+     * @brief Create a key-value pair in etcd if the key does not already exist.
+     *        This is implemented via etcd transaction (CreateRevision == 0).
+     * @return: OK on success; ETCD_TRANSACTION_FAIL if key already exists.
+     */
+    static ErrorCode Create(const char* key, const size_t key_size,
+                            const char* value, const size_t value_size);
+
+    /*
      * @brief Get all key-value pairs with a given prefix.
      * @param prefix: The prefix to search for.
      * @param prefix_size: The size of the prefix in bytes.
@@ -144,6 +152,17 @@ class EtcdHelper {
     static ErrorCode GetFirstKeyWithPrefix(const char* prefix,
                                             const size_t prefix_size,
                                             std::string& first_key);
+
+    /*
+     * @brief Get the last key with a given prefix (sorted by key descending).
+     * @param prefix: The prefix to search for.
+     * @param prefix_size: The size of the prefix in bytes.
+     * @param last_key: Output param, the last key found.
+     * @return: Error code. ETCD_KEY_NOT_EXIST if no key found.
+     */
+    static ErrorCode GetLastKeyWithPrefix(const char* prefix,
+                                          const size_t prefix_size,
+                                          std::string& last_key);
 
     /*
      * @brief Delete a range of keys from etcd.

@@ -74,6 +74,12 @@ class EtcdOpLogStore {
      */
     ErrorCode GetLatestSequenceId(uint64_t& sequence_id);
 
+    // Stronger (than `/latest`) best-effort query: return the maximum existing
+    // sequence_id by scanning etcd keys under /oplog/{cluster_id}/ with
+    // descending key order.
+    // Return ETCD_KEY_NOT_EXIST if no OpLog exists yet.
+    ErrorCode GetMaxSequenceId(uint64_t& sequence_id);
+
     /**
      * @brief Update the latest sequence_id in etcd.
      * @param sequence_id: The latest sequence_id to update.
@@ -137,6 +143,9 @@ class EtcdOpLogStore {
     // Used for robust cleanup (Scheme 3) so we don't rely on a persisted
     // "cleaned_upto" marker.
     std::optional<uint64_t> GetMinSequenceId() const;
+
+    // Best-effort: find the maximum existing OpLog sequence_id in etcd.
+    std::optional<uint64_t> GetMaxSequenceIdInternal() const;
 
     /**
      * @brief Serialize an OpLogEntry to JSON string.

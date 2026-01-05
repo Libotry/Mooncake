@@ -11,14 +11,30 @@
 
 namespace mooncake {
 
-MasterViewHelper::MasterViewHelper() {
-    std::string cluster_id;
+namespace {
+std::string ResolveClusterIdForMasterView(const std::string& cluster_id) {
+    if (!cluster_id.empty()) {
+        return cluster_id;
+    }
     const char* cluster_id_env = std::getenv("MC_STORE_CLUSTER_ID");
     if (cluster_id_env != nullptr && strlen(cluster_id_env) > 0) {
-        cluster_id = cluster_id_env;
-    } else {
-        cluster_id = "mooncake";
+        return std::string(cluster_id_env);
     }
+    return DEFAULT_CLUSTER_ID;
+}
+}  // namespace
+
+MasterViewHelper::MasterViewHelper(const std::string& cluster_id) {
+    BuildMasterViewKeyFromClusterId(ResolveClusterIdForMasterView(cluster_id));
+}
+
+void MasterViewHelper::SetClusterId(const std::string& cluster_id) {
+    BuildMasterViewKeyFromClusterId(ResolveClusterIdForMasterView(cluster_id));
+}
+
+void MasterViewHelper::BuildMasterViewKeyFromClusterId(
+    const std::string& cluster_id_in) {
+    std::string cluster_id = cluster_id_in;
     // Ensure the cluster_id ends with '/' if not empty
     if (!cluster_id.empty() && cluster_id.back() != '/') {
         cluster_id += '/';
@@ -132,7 +148,7 @@ int MasterServiceSupervisor::Start() {
         }
 
         LOG(INFO) << "Init leader election helper...";
-        MasterViewHelper mv_helper;
+        MasterViewHelper mv_helper(config_.cluster_id);
         if (mv_helper.ConnectToEtcd(config_.etcd_endpoints) != ErrorCode::OK) {
             LOG(ERROR) << "Failed to connect to etcd endpoints: "
                        << config_.etcd_endpoints;
@@ -166,17 +182,10 @@ int MasterServiceSupervisor::Start() {
             StartStandbyService(mv_helper, current_leader);
             had_standby = true;
 
-            // Build master_view_key (same logic as MasterViewHelper)
-            std::string cluster_id = config_.cluster_id;
-            if (!cluster_id.empty() && cluster_id.back() != '/') {
-                cluster_id += '/';
-            }
-            std::string master_view_key = "mooncake-store/" + cluster_id + "master_view";
-
             // Watch until leader is deleted
             LOG(INFO) << "Watching for leadership change...";
             auto watch_ret = EtcdHelper::WatchUntilDeleted(
-                master_view_key.c_str(), master_view_key.size());
+                mv_helper.GetMasterViewKey().c_str(), mv_helper.GetMasterViewKey().size());
 
             if (watch_ret != ErrorCode::OK) {
                 LOG(ERROR) << "Error watching for leadership change: " << watch_ret;

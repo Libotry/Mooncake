@@ -160,8 +160,9 @@ class OpLogApplier {
     std::atomic<uint64_t> expected_sequence_id_{1};
     
     // Constants for missing entry handling
-    static constexpr int kMissingEntryWaitSeconds = 5;  // Wait 5 seconds before requesting
-    static constexpr int kMissingEntrySkipSeconds = 3;  // Wait 3 seconds then skip (avoid global stall)
+    // IMPORTANT: request must happen BEFORE skip, otherwise we will never request.
+    static constexpr int kMissingEntryRequestSeconds = 1;  // request from etcd after 1s
+    static constexpr int kMissingEntrySkipSeconds = 3;     // skip after 3s (avoid global stall)
     static constexpr int kMaxPendingEntries = 1000;     // Max pending entries before giving up
 };
 

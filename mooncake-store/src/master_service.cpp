@@ -203,6 +203,12 @@ MasterService::MasterService(const MasterServiceConfig& config)
         auto etcd_oplog_store =
             std::make_shared<EtcdOpLogStore>(cluster_id_, /*enable_latest_seq_batch_update=*/true);
         oplog_manager_.SetEtcdOpLogStore(etcd_oplog_store);
+        // Fence against restart/promotion regressions: initialize OpLogManager
+        // to the maximum existing sequence_id in etcd so we don't collide/overwrite.
+        uint64_t max_seq = 0;
+        if (etcd_oplog_store->GetMaxSequenceId(max_seq) == ErrorCode::OK) {
+            oplog_manager_.SetInitialSequenceId(max_seq);
+        }
         LOG(INFO) << "EtcdOpLogStore initialized for cluster_id="
                   << cluster_id_ << " (etcd connection should be established "
                   << "before MasterService construction)";
@@ -268,7 +274,19 @@ void MasterService::RestoreFromStandbySnapshot(
     const std::vector<std::pair<std::string, StandbyObjectMetadata>>& snapshot,
     uint64_t initial_oplog_sequence_id) {
     // 1) Ensure OpLog sequence continues without regression after failover.
-    oplog_manager_.SetInitialSequenceId(initial_oplog_sequence_id);
+    // Prefer reading the true max seq from etcd (stronger than standby_last_seq),
+    // fall back to caller-provided initial_oplog_sequence_id.
+    uint64_t start_seq = initial_oplog_sequence_id;
+#ifdef STORE_USE_ETCD
+    if (enable_ha_ && !cluster_id_.empty()) {
+        EtcdOpLogStore store(cluster_id_, /*enable_latest_seq_batch_update=*/false);
+        uint64_t max_seq = 0;
+        if (store.GetMaxSequenceId(max_seq) == ErrorCode::OK) {
+            start_seq = std::max(start_seq, max_seq);
+        }
+    }
+#endif
+    oplog_manager_.SetInitialSequenceId(start_seq);
 
     // 2) Restore metadata entries.
     // Keep dummy allocators alive for restored memory replicas. AllocatedBuffer
