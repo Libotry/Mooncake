@@ -349,7 +349,6 @@ std::string EtcdOpLogStore::SerializeOpLogEntry(
     root["payload"] = entry.payload;
     root["checksum"] = static_cast<Json::UInt>(entry.checksum);
     root["prefix_hash"] = static_cast<Json::UInt>(entry.prefix_hash);
-    root["key_sequence_id"] = static_cast<Json::UInt64>(entry.key_sequence_id);
 
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";  // Compact format
@@ -380,7 +379,6 @@ bool EtcdOpLogStore::DeserializeOpLogEntry(const std::string& json_str,
         entry.payload = root["payload"].asString();
         entry.checksum = root["checksum"].asUInt();
         entry.prefix_hash = root["prefix_hash"].asUInt();
-        entry.key_sequence_id = root["key_sequence_id"].asUInt64();
     } catch (const std::exception& e) {
         LOG(ERROR) << "Failed to deserialize OpLogEntry: " << e.what();
         return false;

@@ -383,7 +383,6 @@ bool OpLogWatcher::DeserializeOpLogEntry(const std::string& json_str,
     entry.payload = root.get("payload", "").asString();
     entry.checksum = root.get("checksum", 0).asUInt();
     entry.prefix_hash = root.get("prefix_hash", 0).asUInt();
-    entry.key_sequence_id = root.get("key_sequence_id", 0).asUInt64();
     return true;
 }
 

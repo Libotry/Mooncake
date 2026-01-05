@@ -40,7 +40,7 @@ EtcdOpLogStore* OpLogApplier::GetEtcdOpLogStore() const {
 }
 
 bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
-    // Global ordering only (key_sequence_id is deprecated and ignored).
+    // Global ordering only.
     //
     // IMPORTANT:
     // - Watch callbacks / retries may deliver duplicate or already-applied entries.
@@ -139,7 +139,6 @@ size_t OpLogApplier::ApplyOpLogEntries(const std::vector<OpLogEntry>& entries) {
 }
 
 uint64_t OpLogApplier::GetKeySequenceId(const std::string& key) const {
-    // Deprecated: key_sequence_id is no longer tracked.
     // Global sequence_id is used for ordering.
     (void)key;  // Suppress unused parameter warning
     return 0;
@@ -370,7 +369,6 @@ OpLogApplier::GapResolveResult OpLogApplier::TryResolveGapsOnceForPromotion(
 
 bool OpLogApplier::CheckSequenceOrder(const OpLogEntry& entry) {
     // Only check global sequence order.
-    // key_sequence_id is no longer used for ordering.
     return entry.sequence_id == expected_sequence_id_.load();
 }
 

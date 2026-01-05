@@ -39,9 +39,6 @@ struct OpLogEntry {
     std::string payload;         // Serialized extra data (optional)
     uint32_t checksum{0};        // Checksum of payload (implementation-defined)
     uint32_t prefix_hash{0};     // Hash of the entire key (for verification and optimization)
-    // Deprecated: key_sequence_id is kept for backward compatibility only.
-    // Ordering is guaranteed by global sequence_id.
-    uint64_t key_sequence_id{0};
 };
 
 /**

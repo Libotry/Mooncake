@@ -29,11 +29,6 @@ uint64_t OpLogManager::Append(OpType type, const std::string& key,
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     entry.sequence_id = ++last_seq_id_;
-    
-    // Note: We use global sequence_id for ordering guarantee.
-    // key_sequence_id is set to sequence_id for backward compatibility,
-    // but the actual ordering is based on global sequence_id.
-    entry.key_sequence_id = entry.sequence_id;
 
     if (buffer_.size() >= kMaxBufferEntries_) {
         buffer_.pop_front();
@@ -72,7 +67,6 @@ OpLogEntry OpLogManager::AllocateEntry(OpType type, const std::string& key,
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     entry.sequence_id = ++last_seq_id_;
-    entry.key_sequence_id = entry.sequence_id;  // deprecated
 
     if (buffer_.size() >= kMaxBufferEntries_) {
         buffer_.pop_front();

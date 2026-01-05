@@ -50,7 +50,7 @@ class OpLogApplier {
     /**
      * @brief Get the current sequence ID for a key (DEPRECATED)
      * @param key Object key
-     * @return Always returns 0 - key_sequence_id is no longer tracked
+     * @return Always returns 0 - global sequence_id is used for ordering
      * @deprecated Use global sequence_id for ordering
      */
     uint64_t GetKeySequenceId(const std::string& key) const;
