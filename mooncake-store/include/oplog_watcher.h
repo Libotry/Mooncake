@@ -53,40 +53,19 @@ class OpLogWatcher {
     void Stop();
 
     /**
-     * @brief Read OpLog entries from etcd since a given sequence ID
-     * @param start_seq_id Starting sequence ID (exclusive)
-     * @param entries Output vector of OpLog entries
-     * @return true on success, false on failure
-     */
-    bool ReadOpLogSince(uint64_t start_seq_id,
-                        std::vector<OpLogEntry>& entries);
-
-    /**
      * @brief Get the last processed sequence ID
      * @return Last processed sequence ID
      */
     uint64_t GetLastProcessedSequenceId() const;
 
    private:
-    bool ReadOpLogSinceWithRevision(uint64_t start_seq_id,
-                                   std::vector<OpLogEntry>& entries,
-                                   EtcdRevisionId& revision_id);
-    /**
-     * @brief Static callback function for etcd Watch
-     * @param context OpLogWatcher instance (passed as void*)
-     * @param key etcd key
-     * @param key_size key size
-     * @param value etcd value
-     * @param value_size value size
-     * @param event_type event type (0 = PUT, 1 = DELETE)
-     */
+    bool ReadOpLogSince(uint64_t start_seq_id,
+                       std::vector<OpLogEntry>& entries,
+                       EtcdRevisionId& revision_id);
+    // Callback includes etcd KV mod_revision for precise resume.
     static void WatchCallback(void* context, const char* key, size_t key_size,
-                              const char* value, size_t value_size, int event_type);
-
-    // V2 callback includes etcd KV mod_revision for precise resume.
-    static void WatchCallbackV2(void* context, const char* key, size_t key_size,
-                                const char* value, size_t value_size, int event_type,
-                                int64_t mod_revision);
+                              const char* value, size_t value_size, int event_type,
+                              int64_t mod_revision);
 
     /**
      * @brief Watch etcd OpLog changes (runs in background thread)

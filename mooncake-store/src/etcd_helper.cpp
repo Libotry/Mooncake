@@ -268,25 +268,6 @@ ErrorCode EtcdHelper::WatchWithPrefix(const char* prefix, const size_t prefix_si
 ErrorCode EtcdHelper::WatchWithPrefixFromRevision(
     const char* prefix, const size_t prefix_size, EtcdRevisionId start_revision,
     void* callback_context,
-    void (*callback_func)(void*, const char*, size_t, const char*, size_t, int)) {
-    char* err_msg = nullptr;
-    void* callback_func_ptr = reinterpret_cast<void*>(callback_func);
-    int ret = EtcdStoreWatchWithPrefixFromRevisionWrapper(
-        (char*)prefix, (int)prefix_size, (GoInt64)start_revision, callback_context,
-        callback_func_ptr, &err_msg);
-    if (ret != 0) {
-        LOG(ERROR) << "prefix=" << std::string(prefix, prefix_size)
-                   << ", start_revision=" << (int64_t)start_revision
-                   << ", error=" << err_msg;
-        free(err_msg);
-        return ErrorCode::ETCD_OPERATION_ERROR;
-    }
-    return ErrorCode::OK;
-}
-
-ErrorCode EtcdHelper::WatchWithPrefixFromRevisionV2(
-    const char* prefix, const size_t prefix_size, EtcdRevisionId start_revision,
-    void* callback_context,
     void (*callback_func)(void*, const char*, size_t, const char*, size_t, int,
                           int64_t)) {
     char* err_msg = nullptr;
@@ -419,19 +400,6 @@ ErrorCode EtcdHelper::WatchWithPrefix(const char* prefix, const size_t prefix_si
 }
 
 ErrorCode EtcdHelper::WatchWithPrefixFromRevision(
-    const char* prefix, const size_t prefix_size, EtcdRevisionId start_revision,
-    void* callback_context,
-    void (*callback_func)(void*, const char*, size_t, const char*, size_t, int)) {
-    (void)prefix;
-    (void)prefix_size;
-    (void)start_revision;
-    (void)callback_context;
-    (void)callback_func;
-    LOG(FATAL) << "Etcd is not enabled in compilation";
-    return ErrorCode::ETCD_OPERATION_ERROR;
-}
-
-ErrorCode EtcdHelper::WatchWithPrefixFromRevisionV2(
     const char* prefix, const size_t prefix_size, EtcdRevisionId start_revision,
     void* callback_context,
     void (*callback_func)(void*, const char*, size_t, const char*, size_t, int,

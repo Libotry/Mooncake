@@ -178,24 +178,14 @@ class EtcdHelper {
 
     /*
      * @brief Watch all keys with a given prefix from a specific etcd revision.
-     *        This is used to close the "read historical -> start watch" gap.
-     * @param start_revision: Watch events with revision >= start_revision (0 means from now).
-     */
-    static ErrorCode WatchWithPrefixFromRevision(
-        const char* prefix, const size_t prefix_size, EtcdRevisionId start_revision,
-        void* callback_context,
-        void (*callback_func)(void*, const char*, size_t, const char*, size_t, int));
-
-    /*
-     * @brief Watch all keys with a given prefix from a specific etcd revision (V2).
-     *        V2 callback includes `mod_revision` for precise resume.
+     *        Callback includes `mod_revision` for precise resume.
      *        (Implementation may pass max(event.ModRevision, watchResp.Header.Revision).)
      * @param callback_func: void cb(void* ctx, const char* key, size_t key_size,
      *                              const char* value, size_t value_size,
      *                              int event_type, int64_t mod_revision)
      *        event_type: 0=PUT, 1=DELETE, 2=WATCH_BROKEN (watch ended; reconnect)
      */
-    static ErrorCode WatchWithPrefixFromRevisionV2(
+    static ErrorCode WatchWithPrefixFromRevision(
         const char* prefix, const size_t prefix_size, EtcdRevisionId start_revision,
         void* callback_context,
         void (*callback_func)(void*, const char*, size_t, const char*, size_t, int,
