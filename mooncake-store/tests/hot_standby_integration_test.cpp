@@ -27,6 +27,27 @@ DEFINE_string(hs_etcd_endpoints, "",
 DEFINE_string(hs_cluster_id, "hs_integration_cluster",
               "Cluster ID prefix for hot-standby integration tests");
 
+// RAII helper to ensure HotStandbyService is always stopped
+class StandbyServiceGuard {
+   public:
+    explicit StandbyServiceGuard(HotStandbyService* service) : service_(service) {}
+    ~StandbyServiceGuard() {
+        if (service_) {
+            service_->Stop();
+            // Give etcd watch goroutines time to clean up
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
+    // Disable copy and move
+    StandbyServiceGuard(const StandbyServiceGuard&) = delete;
+    StandbyServiceGuard& operator=(const StandbyServiceGuard&) = delete;
+    StandbyServiceGuard(StandbyServiceGuard&&) = delete;
+    StandbyServiceGuard& operator=(StandbyServiceGuard&&) = delete;
+
+   private:
+    HotStandbyService* service_;
+};
+
 class HotStandbyIntegrationTest : public ::testing::Test {
    protected:
     static void SetUpTestSuite() {
@@ -69,6 +90,9 @@ class HotStandbyIntegrationTest : public ::testing::Test {
 #ifdef STORE_USE_ETCD
         // Clean up test data after each test
         CleanupTestData();
+        // Give etcd watch goroutines time to clean up before next test
+        // This helps prevent resource leaks and race conditions
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
 #endif
     }
 
@@ -158,6 +182,8 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
     hs_config.max_replication_lag_entries = 1000;
 
     HotStandbyService standby(hs_config);
+    StandbyServiceGuard guard(&standby);  // RAII: ensure cleanup even on failure
+
     ErrorCode start_err = standby.Start(
         /*primary_address_unused=*/"", FLAGS_hs_etcd_endpoints,
         FLAGS_hs_cluster_id);
@@ -216,8 +242,7 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
     EXPECT_GE(latest_applied, last_seq_id)
         << "Standby should have applied at least the last test sequence ID";
 
-    // 清理
-    standby.Stop();
+    // guard will automatically stop the service
 #endif
 }
 
@@ -249,6 +274,7 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
+    StandbyServiceGuard guard(&standby);  // RAII: ensure cleanup
 
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
@@ -293,7 +319,7 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
             << "Key " << key << " should be in snapshot after promotion";
     }
 
-    standby.Stop();
+    // guard will automatically stop the service
 #endif
 }
 
@@ -325,6 +351,7 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
+    StandbyServiceGuard guard(&standby);  // RAII: ensure cleanup
 
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
@@ -366,7 +393,7 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
     uint64_t promoted_seq_id = standby.GetLatestAppliedSequenceId();
     EXPECT_GE(promoted_seq_id, last_seq_id);
 
-    standby.Stop();
+    // guard will automatically stop the service
 #endif
 }
 
@@ -417,6 +444,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
+    StandbyServiceGuard guard(&standby);  // RAII: ensure cleanup
 
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
@@ -462,7 +490,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
         << "Standby metadata count mismatch. Expected: " << expected_count
         << ", Actual: " << actual_keys.size();
 
-    standby.Stop();
+    // guard will automatically stop the service
 #endif
 }
 
@@ -498,6 +526,8 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
 
     HotStandbyService standby1(hs_config);
     HotStandbyService standby2(hs_config);
+    StandbyServiceGuard guard1(&standby1);  // RAII: ensure cleanup
+    StandbyServiceGuard guard2(&standby2);  // RAII: ensure cleanup
 
     ASSERT_EQ(ErrorCode::OK, standby1.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
@@ -554,8 +584,7 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
             << "Key " << key << " not found in standby2";
     }
 
-    standby1.Stop();
-    standby2.Stop();
+    // guards will automatically stop the services
 #endif
 }
 
@@ -673,6 +702,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
+    StandbyServiceGuard guard(&standby);  // RAII: ensure cleanup
 
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
@@ -739,7 +769,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
 
     LOG(INFO) << "Max lag observed: " << max_lag << " entries";
 
-    standby.Stop();
+    // guard will automatically stop the service
 #endif
 }
 
@@ -755,6 +785,7 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
+    StandbyServiceGuard guard(&standby);  // RAII: ensure cleanup
 
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
@@ -832,7 +863,7 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
     bool is_valid = OpLogManager::ValidateEntrySize(test_entry, &reason);
     EXPECT_FALSE(is_valid) << "Oversized payload should be rejected: " << reason;
 
-    standby.Stop();
+    // guard will automatically stop the service
 #endif
 }
 
