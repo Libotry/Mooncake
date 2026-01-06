@@ -23,10 +23,11 @@
 #include "oplog_manager.h"
 #include "standby_state_machine.h"
 #include "types.h"
+#include "etcd_oplog_store.h"
 
 namespace mooncake::test {
 
-// Minimal Mock MetadataStore for OpLogApplier
+// Minimal MetadataStore implementation for OpLogApplier
 class MinimalMockMetadataStore : public MetadataStore {
    public:
     bool PutMetadata(const std::string&, const StandbyObjectMetadata&) override {
@@ -41,70 +42,16 @@ class MinimalMockMetadataStore : public MetadataStore {
     size_t GetKeyCount() const override { return 0; }
 };
 
-// Mock OpLogApplier for testing OpLogWatcher
+// Simple wrapper around OpLogApplier for testing OpLogWatcher.
+// We don't override any methods since OpLogApplier's methods are not virtual;
+// we just provide a valid instance to OpLogWatcher.
 class MockOpLogApplier : public OpLogApplier {
    public:
     MockOpLogApplier()
-        : OpLogApplier(&mock_metadata_store_, "test_cluster"),
-          mock_metadata_store_() {}
-
-    // Track applied entries
-    std::vector<OpLogEntry> applied_entries_;
-    std::atomic<int> apply_count_{0};
-    std::atomic<bool> should_fail_{false};
-
-    bool ApplyOpLogEntry(const OpLogEntry& entry) override {
-        apply_count_.fetch_add(1);
-        if (should_fail_.load()) {
-            return false;
-        }
-        applied_entries_.push_back(entry);
-        // Call parent implementation to maintain state
-        return OpLogApplier::ApplyOpLogEntry(entry);
-    }
-
-    size_t ProcessPendingEntries() override {
-        // Call parent implementation
-        return OpLogApplier::ProcessPendingEntries();
-    }
-
-    void Clear() {
-        applied_entries_.clear();
-        apply_count_.store(0);
-        should_fail_.store(false);
-    }
+        : OpLogApplier(&metadata_store_, "test_cluster") {}
 
    private:
-    MinimalMockMetadataStore mock_metadata_store_;
-
-    // Track applied entries
-    std::vector<OpLogEntry> applied_entries_;
-    std::atomic<int> apply_count_{0};
-    std::atomic<bool> should_fail_{false};
-
-    bool ApplyOpLogEntry(const OpLogEntry& entry) override {
-        apply_count_.fetch_add(1);
-        if (should_fail_.load()) {
-            return false;
-        }
-        applied_entries_.push_back(entry);
-        return true;
-    }
-
-    size_t ProcessPendingEntries() override {
-        // Mock implementation
-        return 0;
-    }
-
-    uint64_t GetExpectedSequenceId() const override { return 1; }
-
-    void Recover(uint64_t /*last_applied_sequence_id*/) override {}
-
-    void Clear() {
-        applied_entries_.clear();
-        apply_count_.store(0);
-        should_fail_.store(false);
-    }
+    MinimalMockMetadataStore metadata_store_;
 };
 
 // Helper function to create a valid OpLogEntry with checksum
