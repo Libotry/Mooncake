@@ -48,6 +48,7 @@ add_store_test(etcd_oplog_store_test hot_standby_ut/etcd_oplog_store_test.cpp)
 add_store_test(oplog_applier_test hot_standby_ut/oplog_applier_test.cpp)
 add_store_test(oplog_watcher_test hot_standby_ut/oplog_watcher_test.cpp)
 add_store_test(hot_standby_service_test hot_standby_ut/hot_standby_service_test.cpp)
+add_store_test(ha_metric_manager_test hot_standby_ut/ha_metric_manager_test.cpp)
 
 add_subdirectory(e2e)
 
