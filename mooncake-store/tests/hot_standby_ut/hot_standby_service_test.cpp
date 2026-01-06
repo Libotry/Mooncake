@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 
+#include "master_service.h"
+
 namespace mooncake::test {
 
 class HotStandbyServiceTest : public ::testing::Test {
