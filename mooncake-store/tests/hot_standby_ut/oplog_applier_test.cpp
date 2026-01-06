@@ -10,6 +10,9 @@
 #include <thread>
 #include <vector>
 
+#include <xxhash.h>
+
+#include "etcd_oplog_store.h"
 #include "metadata_store.h"
 #include "oplog_manager.h"
 #include "types.h"
@@ -68,6 +71,7 @@ class MockMetadataStore : public MetadataStore {
 };
 
 // Helper function to create a valid OpLogEntry with checksum
+// Uses the same checksum algorithm as OpLogManager (XXH32)
 OpLogEntry MakeEntry(uint64_t seq, OpType type, const std::string& key,
                      const std::string& payload) {
     OpLogEntry e;
@@ -78,9 +82,11 @@ OpLogEntry MakeEntry(uint64_t seq, OpType type, const std::string& key,
     e.op_type = type;
     e.object_key = key;
     e.payload = payload;
-    // Compute checksum and prefix_hash using OpLogManager
-    e.checksum = OpLogManager::ComputeChecksum(e.payload);
-    e.prefix_hash = OpLogManager::ComputePrefixHash(e.object_key);
+    // Compute checksum and prefix_hash using the same algorithm as OpLogManager
+    e.checksum = static_cast<uint32_t>(XXH32(payload.data(), payload.size(), 0));
+    e.prefix_hash = key.empty() ? 0
+                                 : static_cast<uint32_t>(
+                                       XXH32(key.data(), key.size(), 0));
     return e;
 }
 
@@ -222,7 +228,7 @@ TEST_F(OpLogApplierTest, TestApplyWithGap) {
     EXPECT_EQ(2u, applier_->GetExpectedSequenceId());  // Still waiting for seq=2
 
     // Process pending entries - should detect gap and schedule wait
-    size_t processed = applier_->ProcessPendingEntries();
+    (void)applier_->ProcessPendingEntries();
     // May process 0 entries if gap resolution is still waiting
     EXPECT_EQ(2u, applier_->GetExpectedSequenceId());
 }
@@ -396,7 +402,7 @@ TEST_F(OpLogApplierTest, TestRecover_AfterGap) {
     EXPECT_EQ(4u, applier_->GetExpectedSequenceId());
 
     // Now entry3 should be processable
-    size_t processed = applier_->ProcessPendingEntries();
+    (void)applier_->ProcessPendingEntries();
     // entry3 should be in pending, but expected_seq is now 4, so it won't be processed
     // This tests that recovery resets the expected sequence
 }
