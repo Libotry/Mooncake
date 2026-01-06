@@ -9,6 +9,7 @@
 #ifdef STORE_USE_ETCD
 #include "etcd_helper.h"
 #include "etcd_oplog_store.h"
+#include "ha_metric_manager.h"
 #include "oplog_applier.h"
 #include "oplog_manager.h"
 
@@ -367,6 +368,7 @@ void OpLogWatcher::HandleWatchEvent(const std::string& key, const std::string& v
                    << ", key=" << entry.object_key
                    << ". Possible data corruption or tampering. Discarding entry.";
         consecutive_errors_.fetch_add(1);
+        HAMetricManager::instance().inc_oplog_checksum_failures();
         return;
     }
 

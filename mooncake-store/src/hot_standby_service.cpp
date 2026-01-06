@@ -7,6 +7,7 @@
 
 #include "etcd_helper.h"
 #include "etcd_oplog_store.h"
+#include "ha_metric_manager.h"
 #include "master_service.h"
 #include "oplog_applier.h"
 #include "oplog_manager.h"
@@ -21,14 +22,21 @@ HotStandbyService::HotStandbyService(const HotStandbyConfig& config)
     // For now, create without cluster_id (will be updated in Start)
     oplog_applier_ = std::make_unique<OpLogApplier>(metadata_store_.get());
     
-    // Register callback for state change logging and monitoring.
-    // Note: callback does not capture 'this' - it only uses static functions and LOG.
-    // If future enhancements need member access, ensure proper lifetime management.
+    // Register callback for state change logging and metrics.
     state_machine_.RegisterCallback([](StandbyState old_state, StandbyState new_state, StandbyEvent event) {
         LOG(INFO) << "HotStandbyService state changed: " 
                   << StandbyStateToString(old_state) << " -> " 
                   << StandbyStateToString(new_state)
                   << " (event: " << StandbyEventToString(event) << ")";
+        
+        // Update HA metrics
+        HAMetricManager::instance().set_standby_state(static_cast<int64_t>(new_state));
+        HAMetricManager::instance().inc_state_transitions();
+        
+        // Track watch disconnections
+        if (event == StandbyEvent::WATCH_BROKEN || event == StandbyEvent::DISCONNECTED) {
+            HAMetricManager::instance().inc_oplog_watch_disconnections();
+        }
     });
 }
 

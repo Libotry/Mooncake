@@ -13,6 +13,7 @@
 #include <ylt/reflection/user_reflect_macro.hpp>
 #include <ylt/util/tl/expected.hpp>
 
+#include "ha_metric_manager.h"
 #include "master_metric_manager.h"
 #include "master_service.h"
 #include "rpc_helper.h"
@@ -46,6 +47,10 @@ WrappedMasterService::WrappedMasterService(
                 std::string metrics_summary =
                     MasterMetricManager::instance().get_summary_string();
                 LOG(INFO) << "Master Metrics: " << metrics_summary;
+                // Log HA metrics summary
+                std::string ha_summary =
+                    HAMetricManager::instance().get_summary_string();
+                LOG(INFO) << ha_summary;
                 std::this_thread::sleep_for(
                     std::chrono::seconds(kMetricReportIntervalSeconds));
             }
@@ -78,6 +83,8 @@ void WrappedMasterService::init_http_server() {
         "/metrics", [](coro_http_request& req, coro_http_response& resp) {
             std::string metrics =
                 MasterMetricManager::instance().serialize_metrics();
+            // Append HA metrics
+            metrics += HAMetricManager::instance().serialize_metrics();
             resp.add_header("Content-Type", "text/plain; version=0.0.4");
             resp.set_status_and_content(status_type::ok, std::move(metrics));
         });
@@ -87,8 +94,19 @@ void WrappedMasterService::init_http_server() {
         [](coro_http_request& req, coro_http_response& resp) {
             std::string summary =
                 MasterMetricManager::instance().get_summary_string();
+            summary += "\n";
+            summary += HAMetricManager::instance().get_summary_string();
             resp.add_header("Content-Type", "text/plain; version=0.0.4");
             resp.set_status_and_content(status_type::ok, std::move(summary));
+        });
+
+    // Dedicated HA metrics endpoint
+    http_server_.set_http_handler<GET>(
+        "/metrics/ha", [](coro_http_request& req, coro_http_response& resp) {
+            std::string metrics =
+                HAMetricManager::instance().serialize_metrics();
+            resp.add_header("Content-Type", "text/plain; version=0.0.4");
+            resp.set_status_and_content(status_type::ok, std::move(metrics));
         });
 
     http_server_.set_http_handler<GET>(

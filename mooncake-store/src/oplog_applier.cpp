@@ -7,6 +7,7 @@
 #include <chrono>
 
 #include "etcd_oplog_store.h"
+#include "ha_metric_manager.h"
 #include "metadata_store.h"
 #include "oplog_manager.h"
 
@@ -66,6 +67,7 @@ bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
         LOG(ERROR) << "OpLogApplier: checksum mismatch, sequence_id=" << entry.sequence_id
                    << ", key=" << entry.object_key
                    << ". Possible data corruption or tampering. Discarding entry.";
+        HAMetricManager::instance().inc_oplog_checksum_failures();
         return false;
     }
 
@@ -151,6 +153,11 @@ bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
     // Update expected sequence ID
     expected_sequence_id_.store(entry.sequence_id + 1);
 
+    // Update metrics
+    HAMetricManager::instance().inc_oplog_applied_entries();
+    HAMetricManager::instance().set_oplog_applied_sequence_id(
+        static_cast<int64_t>(entry.sequence_id));
+
     // Try to process pending entries
     ProcessPendingEntries();
 
@@ -218,6 +225,9 @@ size_t OpLogApplier::ProcessPendingEntries() {
                 missing_sequence_ids_.erase(missing_seq);
                 expected_sequence_id_.store(missing_seq + 1);
                 skipped_count++;
+                HAMetricManager::instance().inc_oplog_skipped_entries();
+                LOG(WARNING) << "OpLogApplier: skipped missing entry seq=" << missing_seq
+                             << " after " << waited.count() << "s timeout";
                 continue;  // may skip multiple consecutive gaps
             }
 
@@ -328,6 +338,13 @@ size_t OpLogApplier::ProcessPendingEntries() {
         LOG(INFO) << "OpLogApplier: processed " << processed_count
                   << " pending entries, expected_sequence_id now="
                   << expected_sequence_id_.load();
+    }
+
+    // Update pending entries metric
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        HAMetricManager::instance().set_oplog_pending_entries(
+            static_cast<int64_t>(pending_entries_.size()));
     }
 
     return processed_count;
@@ -499,6 +516,8 @@ void OpLogApplier::ApplyRemove(const OpLogEntry& entry) {
 
 bool OpLogApplier::RequestMissingOpLog(uint64_t missing_seq_id) {
 #ifdef STORE_USE_ETCD
+    HAMetricManager::instance().inc_oplog_gap_resolve_attempts();
+    
     EtcdOpLogStore* oplog_store = GetEtcdOpLogStore();
     if (oplog_store == nullptr) {
         LOG(WARNING) << "OpLogApplier: cannot request missing OpLog, cluster_id not set";
@@ -531,6 +550,7 @@ bool OpLogApplier::RequestMissingOpLog(uint64_t missing_seq_id) {
         LOG(ERROR) << "OpLogApplier: checksum mismatch for retrieved missing entry, sequence_id="
                    << missing_seq_id << ", key=" << entry.object_key
                    << ". Possible data corruption. Discarding entry.";
+        HAMetricManager::instance().inc_oplog_checksum_failures();
         return false;
     }
 
@@ -538,6 +558,7 @@ bool OpLogApplier::RequestMissingOpLog(uint64_t missing_seq_id) {
     LOG(INFO) << "OpLogApplier: retrieved missing OpLog entry, sequence_id="
               << missing_seq_id << ", op_type=" << static_cast<int>(entry.op_type)
               << ", key=" << entry.object_key;
+    HAMetricManager::instance().inc_oplog_gap_resolve_success();
 
     // Add to pending entries
     // Note: We don't call ProcessPendingEntries() here to avoid potential recursion.

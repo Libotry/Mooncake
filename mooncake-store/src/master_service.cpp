@@ -11,6 +11,7 @@
 #include "allocator.h"
 #include "etcd_helper.h"
 #include "etcd_oplog_store.h"
+#include "ha_metric_manager.h"
 #include "master_metric_manager.h"
 #include "metadata_store.h"  // For MetadataPayload
 #include "segment.h"
@@ -379,6 +380,7 @@ MasterService::~MasterService() {
 void MasterService::EnqueuePendingMutation(PendingMutation m) {
     m.attempt = 0;
     m.next_retry_at = std::chrono::steady_clock::now();
+    size_t queue_size = 0;
     {
         std::lock_guard<std::mutex> lg(pending_mutations_mutex_);
         if (pending_mutations_.size() >= kMaxPendingMutations) {
@@ -390,7 +392,9 @@ void MasterService::EnqueuePendingMutation(PendingMutation m) {
             pending_mutations_.pop_front();
         }
         pending_mutations_.push_back(std::move(m));
+        queue_size = pending_mutations_.size();
     }
+    HAMetricManager::instance().set_pending_mutation_queue_size(static_cast<int64_t>(queue_size));
     pending_mutations_cv_.notify_one();
 }
 
@@ -400,14 +404,33 @@ ErrorCode MasterService::PersistOpLogEntryWithSyncRetries(
     static constexpr int kSyncRetries = 3;
     static constexpr int kBaseBackoffMs = 20;
     ErrorCode persist_err = ErrorCode::ETCD_OPERATION_ERROR;
+    
+    auto start_time = std::chrono::steady_clock::now();
+    
     for (int attempt = 0; attempt < kSyncRetries; ++attempt) {
         persist_err = oplog_manager_.PersistEntryToEtcd(entry);
         if (persist_err == ErrorCode::OK) {
             break;
         }
+        if (attempt > 0) {
+            HAMetricManager::instance().inc_oplog_etcd_write_retries();
+        }
         std::this_thread::sleep_for(
             std::chrono::milliseconds(kBaseBackoffMs * (1 << attempt)));
     }
+    
+    auto end_time = std::chrono::steady_clock::now();
+    auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time).count();
+    HAMetricManager::instance().observe_oplog_etcd_write_latency_us(latency_us);
+    
+    if (persist_err == ErrorCode::OK) {
+        HAMetricManager::instance().set_oplog_last_sequence_id(
+            static_cast<int64_t>(entry.sequence_id));
+    } else {
+        HAMetricManager::instance().inc_oplog_etcd_write_failures();
+    }
+    
     return persist_err;
 #else
     (void)entry;
