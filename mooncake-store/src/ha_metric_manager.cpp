@@ -228,28 +228,35 @@ int64_t HAMetricManager::get_state_transitions_total() {
 std::string HAMetricManager::serialize_metrics() {
     std::stringstream ss;
 
+    // Helper lambda to serialize a metric
+    auto serialize_metric = [&ss](auto& metric) {
+        std::string metric_str;
+        metric.serialize(metric_str);
+        ss << metric_str;
+    };
+
     // Gauges
-    ss << oplog_last_sequence_id_.serialize();
-    ss << oplog_applied_sequence_id_.serialize();
-    ss << oplog_standby_lag_.serialize();
-    ss << oplog_pending_entries_.serialize();
-    ss << pending_mutation_queue_size_.serialize();
-    ss << standby_state_.serialize();
+    serialize_metric(oplog_last_sequence_id_);
+    serialize_metric(oplog_applied_sequence_id_);
+    serialize_metric(oplog_standby_lag_);
+    serialize_metric(oplog_pending_entries_);
+    serialize_metric(pending_mutation_queue_size_);
+    serialize_metric(standby_state_);
 
     // Counters
-    ss << oplog_skipped_entries_total_.serialize();
-    ss << oplog_checksum_failures_total_.serialize();
-    ss << oplog_gap_resolve_attempts_total_.serialize();
-    ss << oplog_gap_resolve_success_total_.serialize();
-    ss << oplog_etcd_write_failures_total_.serialize();
-    ss << oplog_etcd_write_retries_total_.serialize();
-    ss << oplog_watch_disconnections_total_.serialize();
-    ss << oplog_applied_entries_total_.serialize();
-    ss << state_transitions_total_.serialize();
+    serialize_metric(oplog_skipped_entries_total_);
+    serialize_metric(oplog_checksum_failures_total_);
+    serialize_metric(oplog_gap_resolve_attempts_total_);
+    serialize_metric(oplog_gap_resolve_success_total_);
+    serialize_metric(oplog_etcd_write_failures_total_);
+    serialize_metric(oplog_etcd_write_retries_total_);
+    serialize_metric(oplog_watch_disconnections_total_);
+    serialize_metric(oplog_applied_entries_total_);
+    serialize_metric(state_transitions_total_);
 
     // Histograms
-    ss << oplog_etcd_write_latency_us_.serialize();
-    ss << oplog_apply_latency_us_.serialize();
+    serialize_metric(oplog_etcd_write_latency_us_);
+    serialize_metric(oplog_apply_latency_us_);
 
     return ss.str();
 }
