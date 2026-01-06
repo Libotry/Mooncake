@@ -46,6 +46,7 @@ add_store_test(standby_state_machine_test hot_standby_ut/standby_state_machine_t
 add_store_test(oplog_manager_test hot_standby_ut/oplog_manager_test.cpp)
 add_store_test(etcd_oplog_store_test hot_standby_ut/etcd_oplog_store_test.cpp)
 add_store_test(oplog_applier_test hot_standby_ut/oplog_applier_test.cpp)
+add_store_test(oplog_watcher_test hot_standby_ut/oplog_watcher_test.cpp)
 
 add_subdirectory(e2e)
 
