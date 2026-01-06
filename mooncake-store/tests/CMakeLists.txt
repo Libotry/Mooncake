@@ -1,5 +1,10 @@
 function(add_store_test name)
     add_executable(${name} ${ARGN})
+    # Set include directories for tests
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_BINARY_DIR}/../include
+    )
     target_link_libraries(${name} PUBLIC
         mooncake_store
         cachelib_memory_allocator
