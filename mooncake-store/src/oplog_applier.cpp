@@ -490,9 +490,9 @@ void OpLogApplier::ApplyPutEnd(const OpLogEntry& entry) {
 
 void OpLogApplier::ApplyPutRevoke(const OpLogEntry& entry) {
     // PUT_REVOKE means the object should be removed from metadata store
-    // (but the key itself may still exist if there are other replicas)
-    // For now, we treat it as a remove operation
-    // In the future, we may need to handle partial replica removal
+    // (but the key itself may still exist if there are other replicas).
+    // Current implementation removes the entire key; if we later support
+    // partial replica revocation this logic will need to be refined.
     if (!metadata_store_->Remove(entry.object_key)) {
         LOG(WARNING) << "OpLogApplier: failed to Remove key=" << entry.object_key
                      << " in PUT_REVOKE, sequence_id=" << entry.sequence_id

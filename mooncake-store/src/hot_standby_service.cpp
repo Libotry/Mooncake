@@ -18,8 +18,10 @@ namespace mooncake {
 HotStandbyService::HotStandbyService(const HotStandbyConfig& config)
     : config_(config) {
     metadata_store_ = std::make_unique<StandbyMetadataStore>();
-    // OpLogApplier will be created in Start() with cluster_id
-    // For now, create without cluster_id (will be updated in Start)
+    // OpLogApplier will be re-created in Start() with the resolved cluster_id
+    // to enable etcd-based operations (e.g. requesting missing OpLog entries).
+    // Here we construct a minimal instance so that local metadata operations
+    // are available before etcd wiring is completed.
     oplog_applier_ = std::make_unique<OpLogApplier>(metadata_store_.get());
     
     // Register callback for state change logging and metrics.
@@ -281,8 +283,8 @@ StandbySyncStatus HotStandbyService::GetSyncStatus() const {
         status.lag_entries = 0;
     }
 
-    // Calculate lag time (placeholder - in full implementation this would
-    // track actual time differences)
+    // Lag time is currently reported as 0; if needed we can extend the
+    // protocol to propagate primary timestamps and compute a real value.
     status.lag_time = std::chrono::milliseconds(0);
     status.is_syncing = IsRunning() && IsConnected();
 
@@ -422,20 +424,15 @@ std::unique_ptr<MasterService> HotStandbyService::Promote() {
     // Transition to PROMOTED state
     state_machine_.ProcessEvent(StandbyEvent::PROMOTION_SUCCESS);
 
-    // Stop replication (OpLogWatcher will stop watching)
-    // Note: This will trigger STOP event, transitioning to STOPPED
+    // Stop replication (OpLogWatcher will stop watching).
+    // Note: This will trigger STOP event, transitioning to STOPPED.
     Stop();
 
-    // In full implementation, we would:
-    // 1. Create a new MasterService instance with appropriate config
-    // 2. Initialize it with the replicated metadata from metadata_store_
-    // 3. Set the OpLogManager's initial sequence_id to latest_seq_id
-    // 4. Return the MasterService instance
-
-    // For now, this is a placeholder - the actual MasterService creation
-    // happens in MasterServiceSupervisor::Start() after leader election.
-    // This method ensures all remaining OpLog entries are synced before
-    // the new Primary starts serving requests.
+    // Design note: MasterService creation and initialization are handled by
+    // MasterServiceSupervisor::Start() after leader election. The
+    // responsibility of HotStandbyService::Promote() is limited to ensuring
+    // that all remaining OpLog entries are applied before the new Primary
+    // starts serving requests.
     
     LOG(INFO) << "Standby promoted to Primary successfully. "
               << "All remaining OpLog entries have been synced.";
@@ -535,14 +532,13 @@ void HotStandbyService::VerificationLoop() {
             continue;
         }
 
-        // In full implementation, this would:
-        // 1. Sample keys from local metadata store
-        // 2. Calculate checksums
-        // 3. Send verification request to Primary
-        // 4. Handle mismatches if any
-
-        // Placeholder: Log that verification would happen
-        VLOG(1) << "Verification check (placeholder), state="
+        // Verification is not yet implemented. When enabled, this loop is
+        // expected to:
+        // 1) sample keys from the local metadata store,
+        // 2) calculate checksums,
+        // 3) send a verification request to the Primary, and
+        // 4) handle any mismatches that are detected.
+        VLOG(1) << "Verification check skipped (feature not implemented), state="
                 << StandbyStateToString(GetState());
     }
 
