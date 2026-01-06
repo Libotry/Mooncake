@@ -73,6 +73,21 @@ class HotStandbyIntegrationTest : public ::testing::Test {
     }
 
    private:
+    // Helper function to construct end_key for DeleteRange to delete a single key
+    static std::string MakeEndKeyForSingleKey(const std::string& key) {
+        std::string end_key = key;
+        for (int i = static_cast<int>(end_key.size()) - 1; i >= 0; --i) {
+            unsigned char c = static_cast<unsigned char>(end_key[i]);
+            if (c < 0xFF) {
+                end_key[i] = static_cast<char>(c + 1);
+                end_key.resize(i + 1);
+                return end_key;
+            }
+        }
+        // If all characters are 0xFF, append '\0'
+        return key + std::string(1, '\0');
+    }
+
     void CleanupTestData() {
 #ifdef STORE_USE_ETCD
         // Delete all keys under /oplog/{cluster_id}/ prefix
@@ -94,9 +109,11 @@ class HotStandbyIntegrationTest : public ::testing::Test {
         (void)EtcdHelper::DeleteRange(prefix.c_str(), prefix.size(), end_key.c_str(),
                                       end_key.size());
 
-        // Also delete /latest key
+        // Also delete /latest key using DeleteRange
         std::string latest_key = std::string("/oplog/") + FLAGS_hs_cluster_id + "/latest";
-        (void)EtcdHelper::Delete(latest_key.c_str(), latest_key.size());
+        std::string latest_end_key = MakeEndKeyForSingleKey(latest_key);
+        (void)EtcdHelper::DeleteRange(latest_key.c_str(), latest_key.size(),
+                                      latest_end_key.c_str(), latest_end_key.size());
 #endif
     }
 };
@@ -554,7 +571,21 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
     MasterViewHelper mv_helper(FLAGS_hs_cluster_id);
     mv_helper.ConnectToEtcd(FLAGS_hs_etcd_endpoints);
     std::string master_view_key = mv_helper.GetMasterViewKey();
-    (void)EtcdHelper::Delete(master_view_key.c_str(), master_view_key.size());
+    // Use DeleteRange to delete a single key
+    std::string master_view_end_key = master_view_key;
+    for (int i = static_cast<int>(master_view_end_key.size()) - 1; i >= 0; --i) {
+        unsigned char c = static_cast<unsigned char>(master_view_end_key[i]);
+        if (c < 0xFF) {
+            master_view_end_key[i] = static_cast<char>(c + 1);
+            master_view_end_key.resize(i + 1);
+            break;
+        }
+    }
+    if (master_view_end_key == master_view_key) {
+        master_view_end_key = master_view_key + std::string(1, '\0');
+    }
+    (void)EtcdHelper::DeleteRange(master_view_key.c_str(), master_view_key.size(),
+                                   master_view_end_key.c_str(), master_view_end_key.size());
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     // 2. 第一个节点选举（在后台线程中运行，因为 ElectLeader 会阻塞）
