@@ -48,7 +48,7 @@ bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
     // - Those must be treated as no-op, not as "out-of-order pending", otherwise
     //   pending_entries_ can grow and the applier may appear stuck.
     const uint64_t expected = expected_sequence_id_.load();
-    if (entry.sequence_id < expected) {
+    if (IsSequenceOlder(entry.sequence_id, expected)) {
         // Late arrival of a previously-skipped gap entry: apply only if it's a delete/revoke.
         bool was_skipped = false;
         {
@@ -82,7 +82,7 @@ bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
                 << ", key=" << entry.object_key;
         return true;  // consumed (no-op)
     }
-    if (entry.sequence_id > expected) {
+    if (IsSequenceNewer(entry.sequence_id, expected)) {
         // Future entry - store into pending, wait for the gap to be filled.
         std::lock_guard<std::mutex> lock(pending_mutex_);
 
@@ -169,7 +169,7 @@ size_t OpLogApplier::ProcessPendingEntries() {
             }
             const uint64_t first_pending_seq = pending_entries_.begin()->first;
             const uint64_t expected = expected_sequence_id_.load();
-            if (first_pending_seq <= expected) {
+            if (IsSequenceOlderOrEqual(first_pending_seq, expected)) {
                 break;
             }
 
@@ -225,7 +225,7 @@ size_t OpLogApplier::ProcessPendingEntries() {
 
             auto it = pending_entries_.begin();
             const uint64_t expected = expected_sequence_id_.load();
-            if (it->first != expected) {
+            if (!IsSequenceEqual(it->first, expected)) {
                 break;  // still waiting for earlier sequence_id
             }
 
@@ -382,7 +382,9 @@ OpLogApplier::GapResolveResult OpLogApplier::TryResolveGapsOnceForPromotion(
 
 bool OpLogApplier::CheckSequenceOrder(const OpLogEntry& entry) {
     // Only check global sequence order.
-    return entry.sequence_id == expected_sequence_id_.load();
+    // Use IsSequenceEqual for wrap-around safety (though equality check doesn't
+    // need special handling, we use it for consistency).
+    return IsSequenceEqual(entry.sequence_id, expected_sequence_id_.load());
 }
 
 void OpLogApplier::ApplyPutEnd(const OpLogEntry& entry) {

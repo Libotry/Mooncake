@@ -198,7 +198,7 @@ ErrorCode EtcdOpLogStore::ReadOpLogSinceWithRevision(uint64_t start_sequence_id,
             } catch (...) {
                 continue;
             }
-            if (seq <= start_sequence_id) {
+            if (IsSequenceOlderOrEqual(seq, start_sequence_id)) {
                 continue;
             }
 

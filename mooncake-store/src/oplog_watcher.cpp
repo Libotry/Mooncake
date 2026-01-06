@@ -357,7 +357,7 @@ void OpLogWatcher::HandleWatchEvent(const std::string& key, const std::string& v
         // / already-applied entries (entry.sequence_id < expected) as no-ops, so
         // never regress this counter.
         uint64_t cur = last_processed_sequence_id_.load();
-        while (entry.sequence_id > cur &&
+        while (IsSequenceNewer(entry.sequence_id, cur) &&
                !last_processed_sequence_id_.compare_exchange_weak(cur, entry.sequence_id)) {
             // retry
         }
