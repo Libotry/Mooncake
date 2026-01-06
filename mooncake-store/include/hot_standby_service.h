@@ -16,6 +16,7 @@
 #include "oplog_manager.h"
 #include "oplog_watcher.h"
 #include "snapshot_provider.h"
+#include "standby_state_machine.h"
 #include "types.h"
 
 namespace mooncake {
@@ -51,6 +52,8 @@ struct StandbySyncStatus {
     std::chrono::milliseconds lag_time{0};
     bool is_syncing{false};
     bool is_connected{false};
+    StandbyState state{StandbyState::STOPPED};
+    std::chrono::milliseconds time_in_state{0};
 };
 
 /**
@@ -133,6 +136,22 @@ class HotStandbyService {
     // Inject a snapshot provider (from external snapshot implementation).
     void SetSnapshotProvider(std::unique_ptr<SnapshotProvider> provider);
 
+    /**
+     * @brief Get current state from state machine
+     */
+    StandbyState GetState() const { return state_machine_.GetState(); }
+
+    /**
+     * @brief Get state machine for monitoring/debugging
+     */
+    const StandbyStateMachine& GetStateMachine() const { return state_machine_; }
+
+    /**
+     * @brief Callback for OpLogWatcher state changes
+     * @param event The event to process
+     */
+    void OnWatcherEvent(StandbyEvent event);
+
    private:
     /**
      * @brief Main replication loop (runs in background thread)
@@ -205,8 +224,13 @@ class HotStandbyService {
     std::shared_ptr<ReplicationStream> replication_stream_;
     std::atomic<uint64_t> applied_seq_id_{0};
     std::atomic<uint64_t> primary_seq_id_{0};
-    std::atomic<bool> running_{false};
-    std::atomic<bool> is_connected_{false};
+
+    // State machine for managing service lifecycle
+    StandbyStateMachine state_machine_;
+
+    // Helper methods for state machine
+    bool IsRunning() const { return state_machine_.IsRunning(); }
+    bool IsConnected() const { return state_machine_.IsConnected(); }
 
     // Background threads
     std::thread replication_thread_;

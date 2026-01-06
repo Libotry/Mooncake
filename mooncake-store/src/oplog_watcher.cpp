@@ -183,6 +183,7 @@ void OpLogWatcher::WatchOpLog() {
             LOG(ERROR) << "Failed to start watch for prefix " << watch_prefix
                        << ", error=" << static_cast<int>(err);
             watch_healthy_.store(false);
+            NotifyStateEvent(StandbyEvent::WATCH_BROKEN);
             
             // Try to reconnect
             TryReconnect();
@@ -192,6 +193,7 @@ void OpLogWatcher::WatchOpLog() {
         LOG(INFO) << "Watch started for prefix " << watch_prefix;
         watch_healthy_.store(true);
         consecutive_errors_.store(0);
+        NotifyStateEvent(StandbyEvent::WATCH_HEALTHY);
 
         // The watch is now running in the background (via Go goroutine)
         // We just need to keep the thread alive until Stop() is called or watch fails
@@ -208,6 +210,7 @@ void OpLogWatcher::WatchOpLog() {
                 LOG(WARNING) << "Too many consecutive errors (" << consecutive_errors_.load()
                             << "), reconnecting watch...";
                 watch_healthy_.store(false);
+                NotifyStateEvent(StandbyEvent::MAX_ERRORS_REACHED);
                 break;
             }
         }
@@ -215,6 +218,7 @@ void OpLogWatcher::WatchOpLog() {
         if (running_.load() && !watch_healthy_.load()) {
             // Cancel current watch before reconnecting
             EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
+            NotifyStateEvent(StandbyEvent::WATCH_BROKEN);
             TryReconnect();
         }
     }
@@ -244,8 +248,10 @@ void OpLogWatcher::TryReconnect() {
     // Sync any missed entries before resuming watch
     if (SyncMissedEntries()) {
         LOG(INFO) << "Successfully synced missed OpLog entries";
+        NotifyStateEvent(StandbyEvent::RECOVERY_SUCCESS);
     } else {
         LOG(WARNING) << "Failed to sync missed OpLog entries, continuing anyway";
+        NotifyStateEvent(StandbyEvent::RECOVERY_FAILED);
     }
 }
 

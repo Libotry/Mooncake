@@ -20,6 +20,16 @@ HotStandbyService::HotStandbyService(const HotStandbyConfig& config)
     // OpLogApplier will be created in Start() with cluster_id
     // For now, create without cluster_id (will be updated in Start)
     oplog_applier_ = std::make_unique<OpLogApplier>(metadata_store_.get());
+    
+    // Register callback for state change logging and monitoring.
+    // Note: callback does not capture 'this' - it only uses static functions and LOG.
+    // If future enhancements need member access, ensure proper lifetime management.
+    state_machine_.RegisterCallback([](StandbyState old_state, StandbyState new_state, StandbyEvent event) {
+        LOG(INFO) << "HotStandbyService state changed: " 
+                  << StandbyStateToString(old_state) << " -> " 
+                  << StandbyStateToString(new_state)
+                  << " (event: " << StandbyEventToString(event) << ")";
+    });
 }
 
 // StandbyMetadataStore implementation
@@ -92,9 +102,17 @@ ErrorCode HotStandbyService::Start(const std::string& primary_address,
                                     const std::string& cluster_id) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (running_.load()) {
+    // Use state machine to check if already running
+    if (IsRunning()) {
         LOG(WARNING) << "HotStandbyService is already running";
         return ErrorCode::OK;
+    }
+
+    // Trigger START event
+    auto result = state_machine_.ProcessEvent(StandbyEvent::START);
+    if (!result.allowed) {
+        LOG(ERROR) << "Cannot start HotStandbyService: " << result.reason;
+        return ErrorCode::INVALID_STATE;
     }
 
     config_.primary_address = primary_address;
@@ -106,8 +124,12 @@ ErrorCode HotStandbyService::Start(const std::string& primary_address,
     ErrorCode err = EtcdHelper::ConnectToEtcdStoreClient(etcd_endpoints.c_str());
     if (err != ErrorCode::OK) {
         LOG(ERROR) << "Failed to connect to etcd: " << etcd_endpoints;
+        state_machine_.ProcessEvent(StandbyEvent::CONNECTION_FAILED);
         return err;
     }
+
+    // Transition to SYNCING state
+    state_machine_.ProcessEvent(StandbyEvent::CONNECTED);
 
     // Preserve existing local state if HotStandbyService is restarted in-process:
     // - metadata_store_ may already contain real-time metadata
@@ -131,12 +153,14 @@ ErrorCode HotStandbyService::Start(const std::string& primary_address,
         oplog_applier_->Recover(local_last_seq_id);
     }
 
-    // Create OpLogWatcher
+    // Create OpLogWatcher with state machine callback
     oplog_watcher_ = std::make_unique<OpLogWatcher>(
         etcd_endpoints, cluster_id, oplog_applier_.get());
-
-    running_.store(true);
-    is_connected_.store(true);
+    
+    // Register callback for watcher events
+    oplog_watcher_->SetStateCallback([this](StandbyEvent event) {
+        OnWatcherEvent(event);
+    });
 
     // Bootstrap:
     // - If we already have local state (warm start), do NOT reload snapshot.
@@ -170,6 +194,10 @@ ErrorCode HotStandbyService::Start(const std::string& primary_address,
     if (!oplog_watcher_->StartFromSequenceId(last_applied_seq_id)) {
         LOG(WARNING) << "Failed to start OpLogWatcher from sequence_id="
                      << last_applied_seq_id << ", continuing anyway";
+        state_machine_.ProcessEvent(StandbyEvent::SYNC_FAILED);
+    } else {
+        // Transition to WATCHING state after successful sync
+        state_machine_.ProcessEvent(StandbyEvent::SYNC_COMPLETE);
     }
 
     // Start background threads
@@ -180,21 +208,26 @@ ErrorCode HotStandbyService::Start(const std::string& primary_address,
     }
 
     LOG(INFO) << "HotStandbyService started, watching etcd OpLog for cluster: "
-              << cluster_id;
+              << cluster_id << ", state=" << StandbyStateToString(GetState());
     return ErrorCode::OK;
 #else
+    state_machine_.ProcessEvent(StandbyEvent::FATAL_ERROR);
     LOG(ERROR) << "STORE_USE_ETCD is not enabled, cannot start HotStandbyService";
     return ErrorCode::INTERNAL_ERROR;
 #endif
 }
 
+void HotStandbyService::OnWatcherEvent(StandbyEvent event) {
+    state_machine_.ProcessEvent(event);
+}
+
 void HotStandbyService::Stop() {
-    if (!running_.load()) {
+    if (!IsRunning() && GetState() != StandbyState::PROMOTING) {
         return;
     }
 
-    running_.store(false);
-    is_connected_.store(false);
+    // Trigger STOP event
+    state_machine_.ProcessEvent(StandbyEvent::STOP);
 
     // Stop OpLogWatcher
     if (oplog_watcher_) {
@@ -210,7 +243,7 @@ void HotStandbyService::Stop() {
         verification_thread_.join();
     }
 
-    LOG(INFO) << "HotStandbyService stopped";
+    LOG(INFO) << "HotStandbyService stopped, final_state=" << StandbyStateToString(GetState());
 }
 
 StandbySyncStatus HotStandbyService::GetSyncStatus() const {
@@ -228,7 +261,11 @@ StandbySyncStatus HotStandbyService::GetSyncStatus() const {
 
     // Primary sequence ID (best-effort): updated by ReplicationLoop via etcd `/latest`.
     status.primary_seq_id = primary_seq_id_.load();
-    status.is_connected = is_connected_.load();
+    
+    // Use state machine for connection status
+    status.is_connected = IsConnected();
+    status.state = GetState();
+    status.time_in_state = state_machine_.GetTimeInCurrentState();
 
     if (status.primary_seq_id > status.applied_seq_id) {
         status.lag_entries = status.primary_seq_id - status.applied_seq_id;
@@ -239,17 +276,19 @@ StandbySyncStatus HotStandbyService::GetSyncStatus() const {
     // Calculate lag time (placeholder - in full implementation this would
     // track actual time differences)
     status.lag_time = std::chrono::milliseconds(0);
-    status.is_syncing = running_.load() && is_connected_.load();
+    status.is_syncing = IsRunning() && IsConnected();
 
     return status;
 }
 
 bool HotStandbyService::IsReadyForPromotion() const {
-    StandbySyncStatus status = GetSyncStatus();
-    if (!status.is_connected) {
+    // Use state machine to check if ready for promotion
+    if (!state_machine_.IsReadyForPromotion()) {
         return false;
     }
 
+    StandbySyncStatus status = GetSyncStatus();
+    
     // Allow promotion even with large lag - the new Primary can continue
     // syncing remaining OpLog entries from etcd after promotion.
     // Log a warning if lag is large, but don't block promotion.
@@ -267,7 +306,15 @@ std::unique_ptr<MasterService> HotStandbyService::Promote() {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (!IsReadyForPromotion()) {
-        LOG(ERROR) << "Standby is not ready for promotion (not connected)";
+        LOG(ERROR) << "Standby is not ready for promotion, state="
+                   << StandbyStateToString(GetState());
+        return nullptr;
+    }
+
+    // Trigger PROMOTE event
+    auto result = state_machine_.ProcessEvent(StandbyEvent::PROMOTE);
+    if (!result.allowed) {
+        LOG(ERROR) << "Cannot promote: " << result.reason;
         return nullptr;
     }
 
@@ -276,7 +323,8 @@ std::unique_ptr<MasterService> HotStandbyService::Promote() {
     
     LOG(INFO) << "Promoting Standby to Primary. Applied seq_id: "
               << current_applied_seq_id
-              << ", lag: " << status.lag_entries << " entries";
+              << ", lag: " << status.lag_entries << " entries"
+              << ", state: " << StandbyStateToString(GetState());
 
     // Final catch-up sync before promotion.
     // IMPORTANT:
@@ -320,7 +368,11 @@ std::unique_ptr<MasterService> HotStandbyService::Promote() {
     }
     LOG(INFO) << "Final catch-up sync done. total_applied=" << total_applied;
 
+    // Transition to PROMOTED state
+    state_machine_.ProcessEvent(StandbyEvent::PROMOTION_SUCCESS);
+
     // Stop replication (OpLogWatcher will stop watching)
+    // Note: This will trigger STOP event, transitioning to STOPPED
     Stop();
 
     // In full implementation, we would:
@@ -386,8 +438,8 @@ void HotStandbyService::ReplicationLoop() {
     // in its own thread. This loop now just monitors the status and updates
     // metrics.
 
-    while (running_.load()) {
-        if (!is_connected_.load()) {
+    while (IsRunning()) {
+        if (!IsConnected()) {
             // Not connected - wait a bit before checking again
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
@@ -424,11 +476,11 @@ void HotStandbyService::ReplicationLoop() {
 void HotStandbyService::VerificationLoop() {
     LOG(INFO) << "Verification loop started";
 
-    while (running_.load()) {
+    while (IsRunning()) {
         std::this_thread::sleep_for(
             std::chrono::seconds(config_.verification_interval_sec));
 
-        if (!is_connected_.load()) {
+        if (!IsConnected()) {
             continue;
         }
 
@@ -439,7 +491,8 @@ void HotStandbyService::VerificationLoop() {
         // 4. Handle mismatches if any
 
         // Placeholder: Log that verification would happen
-        VLOG(1) << "Verification check (placeholder)";
+        VLOG(1) << "Verification check (placeholder), state="
+                << StandbyStateToString(GetState());
     }
 
     LOG(INFO) << "Verification loop stopped";
@@ -477,10 +530,11 @@ bool HotStandbyService::ConnectToPrimary() {
 void HotStandbyService::DisconnectFromPrimary() {
     // With etcd-based OpLog sync, disconnection is handled by OpLogWatcher
     // This method is kept for compatibility
-    if (is_connected_.load()) {
-        is_connected_.store(false);
+    if (IsConnected()) {
+        state_machine_.ProcessEvent(StandbyEvent::DISCONNECTED);
         replication_stream_.reset();
-        LOG(INFO) << "Disconnected from Primary (etcd-based sync)";
+        LOG(INFO) << "Disconnected from Primary (etcd-based sync), state="
+                  << StandbyStateToString(GetState());
     }
 }
 

@@ -2,18 +2,23 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "oplog_manager.h"
+#include "standby_state_machine.h"
 #include "types.h"
 
 namespace mooncake {
 
 // Forward declaration
 class OpLogApplier;
+
+// Callback type for state events
+using WatcherStateCallback = std::function<void(StandbyEvent)>;
 
 /**
  * @brief Watch etcd for OpLog changes and apply them to Standby
@@ -58,7 +63,29 @@ class OpLogWatcher {
      */
     uint64_t GetLastProcessedSequenceId() const;
 
+    /**
+     * @brief Set callback for state events
+     * @param callback Callback function to invoke on state events
+     */
+    void SetStateCallback(WatcherStateCallback callback) {
+        state_callback_ = std::move(callback);
+    }
+
+    /**
+     * @brief Check if watch is healthy
+     */
+    bool IsWatchHealthy() const { return watch_healthy_.load(); }
+
    private:
+    /**
+     * @brief Notify state callback
+     */
+    void NotifyStateEvent(StandbyEvent event) {
+        if (state_callback_) {
+            state_callback_(event);
+        }
+    }
+
     bool ReadOpLogSince(uint64_t start_seq_id,
                        std::vector<OpLogEntry>& entries,
                        EtcdRevisionId& revision_id);
@@ -116,6 +143,9 @@ class OpLogWatcher {
     std::atomic<int> consecutive_errors_{0};
     std::atomic<int> reconnect_count_{0};
     std::atomic<bool> watch_healthy_{false};
+    
+    // State callback for notifying HotStandbyService
+    WatcherStateCallback state_callback_;
     
     // Constants for error handling
     static constexpr int kMaxConsecutiveErrors = 10;

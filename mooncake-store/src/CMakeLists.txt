@@ -29,6 +29,7 @@ set(MOONCAKE_STORE_SOURCES
     oplog_watcher.cpp
     oplog_applier.cpp
     hot_standby_service.cpp
+    standby_state_machine.cpp
     # replication_service.cpp removed - using etcd-based OpLog sync instead
 )
 
