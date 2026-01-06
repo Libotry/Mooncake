@@ -2,19 +2,28 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <map>
+#include <set>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "etcd_helper.h"
+#include "etcd_oplog_store.h"
 #include "ha_helper.h"
 #include "ha_metric_manager.h"
 #include "hot_standby_service.h"
 #include "master_service.h"
+#include "metadata_store.h"
+#include "oplog_manager.h"
+#include "standby_state_machine.h"
 
 namespace mooncake {
 namespace testing {
 
-DEFINE_string(hs_etcd_endpoints, "0.0.0.0:2379",
-              "Etcd endpoints for hot-standby integration tests");
+DEFINE_string(hs_etcd_endpoints, "",
+              "Etcd endpoints for hot-standby integration tests (required for integration tests)");
 DEFINE_string(hs_cluster_id, "hs_integration_cluster",
               "Cluster ID prefix for hot-standby integration tests");
 
@@ -26,6 +35,12 @@ class HotStandbyIntegrationTest : public ::testing::Test {
         google::InitGoogleLogging("HotStandbyIntegrationTest");
         google::SetVLOGLevel("*", 1);
         FLAGS_logtostderr = 1;
+
+        // Check if etcd endpoints are provided
+        if (FLAGS_hs_etcd_endpoints.empty()) {
+            GTEST_SKIP() << "hs_etcd_endpoints not provided. "
+                            "Set --hs_etcd_endpoints=<endpoint> to run integration tests.";
+        }
 
         // Initialize etcd client
         ASSERT_EQ(ErrorCode::OK,
@@ -42,6 +57,48 @@ class HotStandbyIntegrationTest : public ::testing::Test {
         google::ShutdownGoogleLogging();
 #endif
     }
+
+    void SetUp() override {
+#ifdef STORE_USE_ETCD
+        // Clean up test data before each test
+        CleanupTestData();
+#endif
+    }
+
+    void TearDown() override {
+#ifdef STORE_USE_ETCD
+        // Clean up test data after each test
+        CleanupTestData();
+#endif
+    }
+
+   private:
+    void CleanupTestData() {
+#ifdef STORE_USE_ETCD
+        // Delete all keys under /oplog/{cluster_id}/ prefix
+        std::string prefix = std::string("/oplog/") + FLAGS_hs_cluster_id + "/";
+
+        auto prefix_end = [](std::string p) -> std::string {
+            for (int i = static_cast<int>(p.size()) - 1; i >= 0; --i) {
+                unsigned char c = static_cast<unsigned char>(p[i]);
+                if (c < 0xFF) {
+                    p[i] = static_cast<char>(c + 1);
+                    p.resize(i + 1);
+                    return p;
+                }
+            }
+            return std::string(1, '\0');
+        };
+        std::string end_key = prefix_end(prefix);
+
+        (void)EtcdHelper::DeleteRange(prefix.c_str(), prefix.size(), end_key.c_str(),
+                                      end_key.size());
+
+        // Also delete /latest key
+        std::string latest_key = std::string("/oplog/") + FLAGS_hs_cluster_id + "/latest";
+        (void)EtcdHelper::Delete(latest_key.c_str(), latest_key.size());
+#endif
+    }
 };
 
 // ========== 8.1.1 端到端测试 ==========
@@ -50,14 +107,100 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Hot-standby end-to-end sync test requires a full HA deployment "
-           "(Primary Master + Standby + configured endpoints). "
-           "Implement by: "
-           "1) starting a Primary MasterService with HA enabled, "
-           "2) starting a HotStandbyService pointing to the same etcd/cluster, "
-           "3) issuing writes on Primary and waiting until Standby metadata "
-           "snapshot matches.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 模拟 Primary 写入 OpLog 到 etcd
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    // 写入几个测试条目
+    std::vector<std::string> test_keys;
+    std::vector<uint64_t> test_seq_ids;
+    for (int i = 0; i < 10; ++i) {
+        std::string key = "test_key_" + std::to_string(i);
+        std::string payload =
+            R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[]})";
+
+        uint64_t seq_id = primary_oplog.Append(OpType::PUT_END, key, payload);
+        test_keys.push_back(key);
+        test_seq_ids.push_back(seq_id);
+
+        LOG(INFO) << "Primary wrote OpLog entry: seq_id=" << seq_id
+                  << ", key=" << key;
+    }
+
+    uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
+    LOG(INFO) << "Primary wrote " << last_seq_id << " OpLog entries";
+
+    // 2. 启动 Standby HotStandbyService
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+    hs_config.max_replication_lag_entries = 1000;
+
+    HotStandbyService standby(hs_config);
+    ErrorCode start_err = standby.Start(
+        /*primary_address_unused=*/"", FLAGS_hs_etcd_endpoints,
+        FLAGS_hs_cluster_id);
+
+    ASSERT_EQ(ErrorCode::OK, start_err)
+        << "Failed to start HotStandbyService";
+
+    // 3. 等待 Standby 同步完成
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    bool synced = false;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+
+        LOG(INFO) << "Standby status: state="
+                  << StandbyStateToString(status.state)
+                  << ", applied_seq_id=" << status.applied_seq_id
+                  << ", primary_seq_id=" << status.primary_seq_id
+                  << ", lag_entries=" << status.lag_entries
+                  << ", is_connected=" << status.is_connected;
+
+        if (status.state == StandbyState::WATCHING &&
+            status.lag_entries == 0 &&
+            status.applied_seq_id >= last_seq_id) {
+            synced = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+
+    ASSERT_TRUE(synced) << "Standby failed to sync within timeout";
+
+    // 4. 验证 Standby 元数据快照
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
+    ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
+
+    LOG(INFO) << "Standby metadata snapshot size: " << snapshot.size();
+
+    // 验证所有写入的 key 都在快照中
+    std::set<std::string> snapshot_keys;
+    for (const auto& kv : snapshot) {
+        snapshot_keys.insert(kv.first);
+    }
+
+    for (const auto& key : test_keys) {
+        EXPECT_NE(snapshot_keys.end(), snapshot_keys.find(key))
+            << "Key " << key << " not found in Standby snapshot";
+    }
+
+    EXPECT_GE(snapshot.size(), test_keys.size())
+        << "Standby snapshot should contain at least the test keys";
+
+    // 5. 验证序列号
+    uint64_t latest_applied = standby.GetLatestAppliedSequenceId();
+    EXPECT_GE(latest_applied, last_seq_id)
+        << "Standby should have applied at least the last test sequence ID";
+
+    // 清理
+    standby.Stop();
 #endif
 }
 
@@ -65,12 +208,75 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) driving Standby to WATCHING state with small lag, "
-           "2) simulating leader election to call HotStandbyService::Promote(), "
-           "3) starting a new Primary MasterService from Standby snapshot, "
-           "4) verifying new Primary can serve reads/writes consistently.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 写入一些 OpLog 条目
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    std::vector<std::string> test_keys;
+    for (int i = 0; i < 5; ++i) {
+        std::string key = "promote_test_key_" + std::to_string(i);
+        std::string payload =
+            R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[]})";
+        primary_oplog.Append(OpType::PUT_END, key, payload);
+        test_keys.push_back(key);
+    }
+
+    uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
+
+    // 2. 启动 Standby 并等待同步
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+    HotStandbyService standby(hs_config);
+
+    ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+
+    // 等待同步完成
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.state == StandbyState::WATCHING &&
+            status.applied_seq_id >= last_seq_id &&
+            status.lag_entries == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // 3. 验证 Standby 就绪
+    ASSERT_TRUE(standby.IsReadyForPromotion())
+        << "Standby should be ready for promotion";
+
+    // 4. 执行晋升
+    auto master = standby.Promote();
+    // Note: Promote() returns nullptr as MasterService creation is handled externally
+    EXPECT_EQ(nullptr, master);
+
+    // 5. 验证晋升后的序列号
+    uint64_t promoted_seq_id = standby.GetLatestAppliedSequenceId();
+    EXPECT_GE(promoted_seq_id, last_seq_id)
+        << "Promoted sequence ID should be at least the last written sequence ID";
+
+    // 6. 验证元数据快照仍然可用
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
+    ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
+
+    std::set<std::string> snapshot_keys;
+    for (const auto& kv : snapshot) {
+        snapshot_keys.insert(kv.first);
+    }
+
+    for (const auto& key : test_keys) {
+        EXPECT_NE(snapshot_keys.end(), snapshot_keys.find(key))
+            << "Key " << key << " should be in snapshot after promotion";
+    }
+
+    standby.Stop();
 #endif
 }
 
@@ -78,12 +284,72 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) running Primary + Standby, "
-           "2) killing Primary (or revoking its master view lease), "
-           "3) promoting Standby and updating MasterView in etcd, "
-           "4) verifying clients transparently switch to new Primary.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 模拟 Primary 写入数据
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    std::vector<std::string> test_keys;
+    for (int i = 0; i < 10; ++i) {
+        std::string key = "failover_key_" + std::to_string(i);
+        std::string payload =
+            R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[]})";
+        primary_oplog.Append(OpType::PUT_END, key, payload);
+        test_keys.push_back(key);
+    }
+
+    uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
+
+    // 2. 启动 Standby
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+    HotStandbyService standby(hs_config);
+
+    ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+
+    // 等待同步
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.state == StandbyState::WATCHING &&
+            status.applied_seq_id >= last_seq_id) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // 3. 模拟 Primary 故障（停止写入新的 OpLog）
+    // 在实际场景中，这可能是 Primary 进程崩溃或网络分区
+
+    // 4. 验证 Standby 数据完整性
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
+    ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
+
+    std::set<std::string> snapshot_keys;
+    for (const auto& kv : snapshot) {
+        snapshot_keys.insert(kv.first);
+    }
+
+    for (const auto& key : test_keys) {
+        EXPECT_NE(snapshot_keys.end(), snapshot_keys.find(key))
+            << "Key " << key << " should be in Standby after Primary failure";
+    }
+
+    // 5. 执行晋升（模拟故障切换）
+    ASSERT_TRUE(standby.IsReadyForPromotion());
+    auto master = standby.Promote();
+    EXPECT_EQ(nullptr, master);
+
+    // 6. 验证晋升后的状态
+    uint64_t promoted_seq_id = standby.GetLatestAppliedSequenceId();
+    EXPECT_GE(promoted_seq_id, last_seq_id);
+
+    standby.Stop();
 #endif
 }
 
@@ -91,13 +357,95 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) writing a mix of PUT/REMOVE operations to Primary, "
-           "2) waiting for Standby to catch up, "
-           "3) comparing Standby metadata snapshot with Primary via RPC or "
-           "direct metadata dump, "
-           "4) asserting key sets and replica lists are identical.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 模拟 Primary 写入混合操作
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    std::map<std::string, bool> expected_keys;  // key -> should_exist
+
+    // PUT 操作
+    for (int i = 0; i < 5; ++i) {
+        std::string key = "put_key_" + std::to_string(i);
+        std::string payload =
+            R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[]})";
+        primary_oplog.Append(OpType::PUT_END, key, payload);
+        expected_keys[key] = true;
+    }
+
+    // REMOVE 操作
+    for (int i = 0; i < 2; ++i) {
+        std::string key = "put_key_" + std::to_string(i);
+        primary_oplog.Append(OpType::REMOVE, key, "");
+        expected_keys[key] = false;  // 被删除了
+    }
+
+    // 再 PUT 一些
+    for (int i = 5; i < 8; ++i) {
+        std::string key = "put_key_" + std::to_string(i);
+        std::string payload =
+            R"({"client_id_first":1,"client_id_second":2,"size":2048,"replicas":[]})";
+        primary_oplog.Append(OpType::PUT_END, key, payload);
+        expected_keys[key] = true;
+    }
+
+    uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
+    LOG(INFO) << "Primary wrote " << last_seq_id << " OpLog entries";
+
+    // 2. 启动 Standby
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+    HotStandbyService standby(hs_config);
+
+    ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+
+    // 3. 等待同步
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.state == StandbyState::WATCHING &&
+            status.applied_seq_id >= last_seq_id &&
+            status.lag_entries == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // 4. 验证一致性
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
+    ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
+
+    std::set<std::string> actual_keys;
+    for (const auto& kv : snapshot) {
+        actual_keys.insert(kv.first);
+    }
+
+    // 验证期望存在的 key 都在
+    for (const auto& kv : expected_keys) {
+        if (kv.second) {
+            EXPECT_NE(actual_keys.end(), actual_keys.find(kv.first))
+                << "Key " << kv.first << " should exist but not found";
+        } else {
+            EXPECT_EQ(actual_keys.end(), actual_keys.find(kv.first))
+                << "Key " << kv.first << " should be removed but still exists";
+        }
+    }
+
+    // 验证元数据数量
+    size_t expected_count = 0;
+    for (const auto& kv : expected_keys) {
+        if (kv.second) expected_count++;
+    }
+    EXPECT_EQ(expected_count, actual_keys.size())
+        << "Standby metadata count mismatch. Expected: " << expected_count
+        << ", Actual: " << actual_keys.size();
+
+    standby.Stop();
 #endif
 }
 
@@ -107,13 +455,90 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) starting one Primary and at least two Standby instances sharing "
-           "the same cluster_id, "
-           "2) verifying all Standbys receive and apply the same OpLog stream, "
-           "3) optionally promoting different Standbys in sequence and checking "
-           "that metadata remains consistent.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 模拟 Primary 写入数据
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    std::vector<std::string> test_keys;
+    for (int i = 0; i < 10; ++i) {
+        std::string key = "multi_standby_key_" + std::to_string(i);
+        std::string payload =
+            R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[]})";
+        primary_oplog.Append(OpType::PUT_END, key, payload);
+        test_keys.push_back(key);
+    }
+
+    uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
+
+    // 2. 启动两个 Standby 实例
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+
+    HotStandbyService standby1(hs_config);
+    HotStandbyService standby2(hs_config);
+
+    ASSERT_EQ(ErrorCode::OK, standby1.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+    ASSERT_EQ(ErrorCode::OK, standby2.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+
+    // 3. 等待两个 Standby 都同步完成
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    bool both_synced = false;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status1 = standby1.GetSyncStatus();
+        auto status2 = standby2.GetSyncStatus();
+
+        if (status1.state == StandbyState::WATCHING &&
+            status2.state == StandbyState::WATCHING &&
+            status1.applied_seq_id >= last_seq_id &&
+            status2.applied_seq_id >= last_seq_id &&
+            status1.lag_entries == 0 && status2.lag_entries == 0) {
+            both_synced = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    ASSERT_TRUE(both_synced) << "Both standbys failed to sync within timeout";
+
+    // 4. 验证两个 Standby 的元数据快照一致
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot1;
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot2;
+
+    ASSERT_TRUE(standby1.ExportMetadataSnapshot(snapshot1));
+    ASSERT_TRUE(standby2.ExportMetadataSnapshot(snapshot2));
+
+    EXPECT_EQ(snapshot1.size(), snapshot2.size())
+        << "Both standbys should have the same number of metadata entries";
+
+    std::set<std::string> keys1, keys2;
+    for (const auto& kv : snapshot1) {
+        keys1.insert(kv.first);
+    }
+    for (const auto& kv : snapshot2) {
+        keys2.insert(kv.first);
+    }
+
+    EXPECT_EQ(keys1, keys2) << "Both standbys should have identical key sets";
+
+    // 5. 验证所有测试 key 都在两个 Standby 中
+    for (const auto& key : test_keys) {
+        EXPECT_NE(keys1.end(), keys1.find(key))
+            << "Key " << key << " not found in standby1";
+        EXPECT_NE(keys2.end(), keys2.find(key))
+            << "Key " << key << " not found in standby2";
+    }
+
+    standby1.Stop();
+    standby2.Stop();
 #endif
 }
 
@@ -121,13 +546,85 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) using MasterViewHelper to run leader election among multiple "
-           "Masters, "
-           "2) ensuring exactly one node holds the master view at any time, "
-           "3) combining with HotStandbyService so that only the elected "
-           "leader promotes its Standby to Primary.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 清理 master view（删除可能存在的旧 key）
+    MasterViewHelper mv_helper(FLAGS_hs_cluster_id);
+    mv_helper.ConnectToEtcd(FLAGS_hs_etcd_endpoints);
+    std::string master_view_key = mv_helper.GetMasterViewKey();
+    (void)EtcdHelper::Delete(master_view_key.c_str(), master_view_key.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    // 2. 第一个节点选举（在后台线程中运行，因为 ElectLeader 会阻塞）
+    std::string master1_address = "10.0.0.1:8888";
+    ViewVersionId version1 = 0;
+    EtcdLeaseId lease1 = 0;
+    bool election1_done = false;
+
+    std::thread election1_thread([&]() {
+        mv_helper.ElectLeader(master1_address, version1, lease1);
+        election1_done = true;
+    });
+
+    // 等待选举完成
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!election1_done && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    ASSERT_TRUE(election1_done) << "Master1 election should complete";
+    ASSERT_NE(0, lease1) << "Master1 should successfully elect as leader";
+
+    // 验证 master view 被设置
+    std::string current_master;
+    ViewVersionId current_version = 0;
+    ASSERT_EQ(ErrorCode::OK,
+              mv_helper.GetMasterView(current_master, current_version));
+    EXPECT_EQ(master1_address, current_master);
+
+    // 3. 释放第一个节点的 lease（模拟故障）
+    EtcdHelper::CancelKeepAlive(lease1);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    // 4. 第二个节点现在应该能够选举成功
+    MasterViewHelper mv_helper2(FLAGS_hs_cluster_id);
+    mv_helper2.ConnectToEtcd(FLAGS_hs_etcd_endpoints);
+    std::string master2_address = "10.0.0.2:8888";
+    ViewVersionId version2 = 0;
+    EtcdLeaseId lease2 = 0;
+    bool election2_done = false;
+
+    std::thread election2_thread([&]() {
+        mv_helper2.ElectLeader(master2_address, version2, lease2);
+        election2_done = true;
+    });
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!election2_done && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    ASSERT_TRUE(election2_done) << "Master2 election should complete";
+    ASSERT_NE(0, lease2) << "Master2 should successfully elect after master1 fails";
+
+    // 验证 master view 切换到第二个节点
+    ASSERT_EQ(ErrorCode::OK,
+              mv_helper2.GetMasterView(current_master, current_version));
+    EXPECT_EQ(master2_address, current_master)
+        << "Master view should switch to master2";
+
+    // 清理
+    if (election1_thread.joinable()) {
+        election1_thread.join();
+    }
+    if (election2_thread.joinable()) {
+        election2_thread.join();
+    }
+    if (lease2 != 0) {
+        EtcdHelper::CancelKeepAlive(lease2);
+    }
 #endif
 }
 
@@ -137,13 +634,81 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) generating a high-rate write workload on Primary "
-           "(e.g., thousands of PUT_END per second), "
-           "2) monitoring HA metrics via HAMetricManager (/metrics/ha), "
-           "3) asserting standby lag (entries + time) stays within "
-           "acceptable bounds.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 启动 Standby
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+    HotStandbyService standby(hs_config);
+
+    ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+
+    // 等待 Standby 进入 WATCHING 状态
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.state == StandbyState::WATCHING) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // 2. 模拟 Primary 高吞吐量写入
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    const int num_writes = 100;
+    std::string payload =
+        R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[]})";
+
+    auto write_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < num_writes; ++i) {
+        std::string key = "throughput_key_" + std::to_string(i);
+        primary_oplog.Append(OpType::PUT_END, key, payload);
+    }
+    auto write_end = std::chrono::steady_clock::now();
+    auto write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        write_end - write_start);
+
+    uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
+    LOG(INFO) << "Wrote " << num_writes << " entries in "
+              << write_duration.count() << "ms, last_seq_id=" << last_seq_id;
+
+    // 3. 监控 Standby lag
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    uint64_t max_lag = 0;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.lag_entries > max_lag) {
+            max_lag = status.lag_entries;
+        }
+
+        LOG(INFO) << "Standby lag: " << status.lag_entries
+                  << " entries, applied_seq_id=" << status.applied_seq_id
+                  << ", primary_seq_id=" << status.primary_seq_id;
+
+        if (status.applied_seq_id >= last_seq_id && status.lag_entries == 0) {
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // 4. 验证最终同步
+    auto final_status = standby.GetSyncStatus();
+    EXPECT_GE(final_status.applied_seq_id, last_seq_id)
+        << "Standby should have applied all entries";
+    EXPECT_EQ(0u, final_status.lag_entries)
+        << "Standby lag should be zero after sync";
+
+    LOG(INFO) << "Max lag observed: " << max_lag << " entries";
+
+    standby.Stop();
 #endif
 }
 
@@ -151,14 +716,92 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
 #ifndef STORE_USE_ETCD
     GTEST_SKIP() << "STORE_USE_ETCD is not enabled.";
 #else
-    GTEST_SKIP()
-        << "Implement by: "
-           "1) issuing writes with large MetadataPayload JSON (near "
-           "kMaxPayloadSize), "
-           "2) verifying Primary can persist them to etcd and Standby can "
-           "apply them without OOM or timeout, "
-           "3) checking that size-based guards and checksum verification "
-           "still pass.";
+    if (FLAGS_hs_etcd_endpoints.empty()) {
+        GTEST_SKIP() << "hs_etcd_endpoints not provided.";
+    }
+
+    // 1. 启动 Standby
+    HotStandbyConfig hs_config;
+    hs_config.enable_verification = false;
+    HotStandbyService standby(hs_config);
+
+    ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
+                                            FLAGS_hs_cluster_id));
+
+    // 等待 Standby 进入 WATCHING 状态
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.state == StandbyState::WATCHING) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // 2. 写入接近最大 payload 大小的条目
+    OpLogManager primary_oplog;
+    primary_oplog.SetEtcdOpLogStore(
+        std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
+
+    // 创建一个接近但不超过最大 payload 大小的 JSON
+    // kMaxPayloadSize = 10MB, 我们使用 9MB 来测试
+    const size_t large_payload_size = 9 * 1024 * 1024;  // 9MB
+    std::string large_payload = R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[])";
+    size_t padding_size = large_payload_size - large_payload.size() - 1;
+    if (padding_size > 0) {
+        large_payload += std::string(padding_size, 'X');
+    }
+    large_payload += "}";
+
+    std::string key = "large_payload_key";
+    uint64_t seq_id = primary_oplog.Append(OpType::PUT_END, key, large_payload);
+
+    LOG(INFO) << "Wrote large payload entry: seq_id=" << seq_id
+              << ", payload_size=" << large_payload.size();
+
+    // 3. 等待 Standby 同步
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    bool synced = false;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = standby.GetSyncStatus();
+        if (status.applied_seq_id >= seq_id && status.lag_entries == 0) {
+            synced = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    ASSERT_TRUE(synced) << "Standby failed to sync large payload entry";
+
+    // 4. 验证 Standby 元数据快照包含该 key
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
+    ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
+
+    bool found = false;
+    for (const auto& kv : snapshot) {
+        if (kv.first == key) {
+            found = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(found) << "Large payload key should be in Standby snapshot";
+
+    // 5. 测试超过最大 payload 大小的条目应该被拒绝
+    std::string oversized_payload(OpLogManager::kMaxPayloadSize + 1, 'X');
+    // 注意：OpLogManager::Append 不会直接拒绝，但 EtcdOpLogStore 或
+    // OpLogApplier 会在应用时进行验证
+    // 这里我们验证 ValidateEntrySize 会拒绝它
+    OpLogEntry test_entry;
+    test_entry.object_key = "oversized_key";
+    test_entry.payload = oversized_payload;
+
+    std::string reason;
+    bool is_valid = OpLogManager::ValidateEntrySize(test_entry, &reason);
+    EXPECT_FALSE(is_valid) << "Oversized payload should be rejected: " << reason;
+
+    standby.Stop();
 #endif
 }
 
