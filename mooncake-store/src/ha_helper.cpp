@@ -35,6 +35,14 @@ void MasterViewHelper::SetClusterId(const std::string& cluster_id) {
 void MasterViewHelper::BuildMasterViewKeyFromClusterId(
     const std::string& cluster_id_in) {
     std::string cluster_id = cluster_id_in;
+    // Normalize cluster_id for validation: strip trailing slashes.
+    while (!cluster_id.empty() && cluster_id.back() == '/') {
+        cluster_id.pop_back();
+    }
+    if (!IsValidClusterIdComponent(cluster_id)) {
+        LOG(FATAL) << "Invalid cluster_id for MasterViewHelper: '" << cluster_id
+                   << "'. Allowed chars: [A-Za-z0-9_.-], max_len=128, no slashes.";
+    }
     // Ensure the cluster_id ends with '/' if not empty
     if (!cluster_id.empty() && cluster_id.back() != '/') {
         cluster_id += '/';

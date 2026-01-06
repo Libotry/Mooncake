@@ -41,6 +41,22 @@ EtcdOpLogStore* OpLogApplier::GetEtcdOpLogStore() const {
 }
 
 bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
+    // Basic DoS protection: validate key/payload sizes before parsing/applying.
+    std::string size_reason;
+    if (!OpLogManager::ValidateEntrySize(entry, &size_reason)) {
+        LOG(ERROR) << "OpLogApplier: entry size rejected, sequence_id=" << entry.sequence_id
+                   << ", key=" << entry.object_key << ", reason=" << size_reason;
+        return false;
+    }
+
+    // Verify checksum to detect data corruption or tampering.
+    if (!OpLogManager::VerifyChecksum(entry)) {
+        LOG(ERROR) << "OpLogApplier: checksum mismatch, sequence_id=" << entry.sequence_id
+                   << ", key=" << entry.object_key
+                   << ". Possible data corruption or tampering. Discarding entry.";
+        return false;
+    }
+
     // Global ordering only.
     //
     // IMPORTANT:
@@ -412,8 +428,12 @@ void OpLogApplier::ApplyPutEnd(const OpLogEntry& entry) {
         struct_json::from_json(payload, entry.payload);
         parse_success = true;
     } catch (const std::exception& e) {
+        const std::string prefix =
+            entry.payload.size() > 256 ? entry.payload.substr(0, 256) : entry.payload;
         LOG(ERROR) << "OpLogApplier: failed to parse payload for key=" << entry.object_key
                    << ", sequence_id=" << entry.sequence_id
+                   << ", payload_size=" << entry.payload.size()
+                   << ", payload_prefix(256)=" << prefix
                    << ", error=" << e.what();
     }
     
@@ -483,6 +503,14 @@ bool OpLogApplier::RequestMissingOpLog(uint64_t missing_seq_id) {
     if (err != ErrorCode::OK) {
         LOG(ERROR) << "OpLogApplier: failed to read missing OpLog from etcd, sequence_id="
                    << missing_seq_id << ", error=" << static_cast<int>(err);
+        return false;
+    }
+
+    std::string size_reason;
+    if (!OpLogManager::ValidateEntrySize(entry, &size_reason)) {
+        LOG(ERROR) << "OpLogApplier: missing entry size rejected, sequence_id="
+                   << missing_seq_id << ", key=" << entry.object_key
+                   << ", reason=" << size_reason;
         return false;
     }
 

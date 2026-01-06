@@ -103,6 +103,16 @@ class OpLogManager {
     // This is public so OpLogWatcher and OpLogApplier can validate entries.
     static bool VerifyChecksum(const OpLogEntry& entry);
 
+    // Basic DoS protection for externally sourced OpLog entries (etcd watch / reads).
+    // Enforce conservative bounds on key/payload sizes before parsing/applying.
+    static constexpr size_t kMaxObjectKeySize = 4096;                 // 4 KiB
+    static constexpr size_t kMaxPayloadSize = 10 * 1024 * 1024;       // 10 MiB
+
+    // Validate OpLogEntry key/payload sizes. If invalid, returns false and
+    // optionally sets a human-readable reason.
+    static bool ValidateEntrySize(const OpLogEntry& entry,
+                                  std::string* reason = nullptr);
+
    private:
     static uint64_t NowMs();
     static uint32_t ComputeChecksum(const std::string& data);

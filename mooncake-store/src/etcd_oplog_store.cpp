@@ -24,6 +24,12 @@ EtcdOpLogStore::EtcdOpLogStore(const std::string& cluster_id,
     while (!cluster_id_.empty() && cluster_id_.back() == '/') {
         cluster_id_.pop_back();
     }
+
+    if (!cluster_id_.empty() && !IsValidClusterIdComponent(cluster_id_)) {
+        LOG(FATAL) << "Invalid cluster_id for EtcdOpLogStore: '" << cluster_id_
+                   << "'. Allowed chars: [A-Za-z0-9_.-], max_len=128, no slashes.";
+    }
+
     // Start batch update thread only for writers.
     if (enable_latest_seq_batch_update_) {
         batch_update_running_.store(true);
@@ -427,6 +433,14 @@ bool EtcdOpLogStore::DeserializeOpLogEntry(const std::string& json_str,
         entry.prefix_hash = root["prefix_hash"].asUInt();
     } catch (const std::exception& e) {
         LOG(ERROR) << "Failed to deserialize OpLogEntry: " << e.what();
+        return false;
+    }
+
+    std::string size_reason;
+    if (!OpLogManager::ValidateEntrySize(entry, &size_reason)) {
+        LOG(ERROR) << "EtcdOpLogStore: entry size rejected, sequence_id="
+                   << entry.sequence_id << ", key=" << entry.object_key
+                   << ", reason=" << size_reason;
         return false;
     }
 

@@ -30,6 +30,10 @@ OpLogWatcher::OpLogWatcher(const std::string& etcd_endpoints,
     while (!cluster_id_.empty() && cluster_id_.back() == '/') {
         cluster_id_.pop_back();
     }
+    if (!cluster_id_.empty() && !IsValidClusterIdComponent(cluster_id_)) {
+        LOG(FATAL) << "Invalid cluster_id for OpLogWatcher: '" << cluster_id_
+                   << "'. Allowed chars: [A-Za-z0-9_.-], max_len=128, no slashes.";
+    }
 }
 
 OpLogWatcher::~OpLogWatcher() {
@@ -338,6 +342,15 @@ void OpLogWatcher::HandleWatchEvent(const std::string& key, const std::string& v
     OpLogEntry entry;
     if (!DeserializeOpLogEntry(value, entry)) {
         LOG(ERROR) << "Failed to deserialize OpLog entry from key: " << key;
+        consecutive_errors_.fetch_add(1);
+        return;
+    }
+
+    // Basic DoS protection: validate key/payload sizes before further processing.
+    std::string size_reason;
+    if (!OpLogManager::ValidateEntrySize(entry, &size_reason)) {
+        LOG(ERROR) << "OpLog entry size rejected: sequence_id=" << entry.sequence_id
+                   << ", key=" << entry.object_key << ", reason=" << size_reason;
         consecutive_errors_.fetch_add(1);
         return;
     }

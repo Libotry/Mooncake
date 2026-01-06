@@ -147,6 +147,25 @@ bool OpLogManager::VerifyChecksum(const OpLogEntry& entry) {
     return computed == entry.checksum;
 }
 
+bool OpLogManager::ValidateEntrySize(const OpLogEntry& entry,
+                                     std::string* reason) {
+    if (entry.object_key.size() > kMaxObjectKeySize) {
+        if (reason) {
+            *reason = "object_key too large: size=" +
+                      std::to_string(entry.object_key.size());
+        }
+        return false;
+    }
+    if (entry.payload.size() > kMaxPayloadSize) {
+        if (reason) {
+            *reason =
+                "payload too large: size=" + std::to_string(entry.payload.size());
+        }
+        return false;
+    }
+    return true;
+}
+
 }  // namespace mooncake
 
 

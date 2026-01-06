@@ -33,10 +33,8 @@ static constexpr uint64_t ERRNO_BASE = DEFAULT_VALUE - 1000;
 //   IsSequenceNewer(0, UINT64_MAX) = true  (0 is newer after wrap)
 //   IsSequenceNewer(UINT64_MAX, 0) = false (UINT64_MAX is older before wrap)
 //
-// Note: Using 'inline' (not 'static inline') for namespace-scope functions.
-// 'inline' allows multiple definitions across translation units (ODR),
-// and the linker ensures only one copy is used. 'static inline' would create
-// a separate copy per translation unit, causing code bloat.
+// Note: We use 'static inline' here to give these small helpers internal
+// linkage and avoid any potential ODR/linkage issues in large codebases.
 static inline bool IsSequenceNewer(uint64_t a, uint64_t b) {
     // Cast to int64_t to get signed difference, then check if positive.
     // This correctly handles wrap-around: if a wrapped from UINT64_MAX to 0,
@@ -58,6 +56,31 @@ static inline bool IsSequenceNewerOrEqual(uint64_t a, uint64_t b) {
 
 static inline bool IsSequenceOlderOrEqual(uint64_t a, uint64_t b) {
     return a == b || static_cast<int64_t>(a - b) < 0;
+}
+
+// Cluster ID validation utilities.
+//
+// cluster_id is used to construct etcd key prefixes (e.g. "/oplog/<cluster_id>/...").
+// To avoid key-prefix injection / accidental cross-cluster overlap, we restrict the
+// allowed characters to a conservative safe set. We validate the "component" form
+// (without trailing slash). Trailing slashes should be normalized away before
+// validation.
+static inline bool IsValidClusterIdComponent(const std::string& cluster_id) {
+    if (cluster_id.empty()) {
+        return false;
+    }
+    if (cluster_id.size() > 128) {
+        return false;
+    }
+    for (unsigned char c : cluster_id) {
+        const bool ok =
+            (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') || c == '_' || c == '-' || c == '.';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
 }
 static constexpr uint64_t DEFAULT_DEFAULT_KV_LEASE_TTL =
     5000;  // in milliseconds
