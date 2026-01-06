@@ -13,14 +13,31 @@ namespace mooncake {
 
 namespace {
 std::string ResolveClusterIdForMasterView(const std::string& cluster_id) {
+    std::string resolved;
     if (!cluster_id.empty()) {
-        return cluster_id;
+        resolved = cluster_id;
+    } else {
+        const char* cluster_id_env = std::getenv("MC_STORE_CLUSTER_ID");
+        if (cluster_id_env != nullptr && strlen(cluster_id_env) > 0) {
+            resolved = std::string(cluster_id_env);
+        } else {
+            resolved = DEFAULT_CLUSTER_ID;
+        }
     }
-    const char* cluster_id_env = std::getenv("MC_STORE_CLUSTER_ID");
-    if (cluster_id_env != nullptr && strlen(cluster_id_env) > 0) {
-        return std::string(cluster_id_env);
+    
+    // Validate resolved cluster_id (even if it's the default).
+    // Strip trailing slashes for validation.
+    std::string normalized = resolved;
+    while (!normalized.empty() && normalized.back() == '/') {
+        normalized.pop_back();
     }
-    return DEFAULT_CLUSTER_ID;
+    if (!normalized.empty() && !IsValidClusterIdComponent(normalized)) {
+        LOG(FATAL) << "Invalid cluster_id resolved for MasterViewHelper: '" << resolved
+                   << "' (normalized: '" << normalized
+                   << "'). Allowed chars: [A-Za-z0-9_.-], max_len=128, no slashes.";
+    }
+    
+    return resolved;
 }
 }  // namespace
 
