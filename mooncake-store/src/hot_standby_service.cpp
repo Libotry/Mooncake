@@ -334,28 +334,69 @@ std::unique_ptr<MasterService> HotStandbyService::Promote() {
         oplog_watcher_->Stop();
     }
 
-    // Best-effort: resolve any outstanding gaps ONCE before promotion.
-    // Do NOT block promotion if gaps cannot be fetched.
+    // Best-effort: resolve any outstanding gaps with retry before promotion.
+    // Do NOT block promotion if gaps cannot be fetched after max retries.
+    static constexpr int kMaxGapResolveRetries = 3;
     if (oplog_applier_) {
-        auto res = oplog_applier_->TryResolveGapsOnceForPromotion(/*max_ids=*/1024);
-        if (res.attempted > 0) {
-            LOG(INFO) << "Promotion gap resolve (best-effort): attempted=" << res.attempted
+        for (int retry = 0; retry < kMaxGapResolveRetries; ++retry) {
+            auto res = oplog_applier_->TryResolveGapsOnceForPromotion(/*max_ids=*/1024);
+            if (res.attempted == 0) {
+                // No gaps to resolve
+                break;
+            }
+            LOG(INFO) << "Promotion gap resolve (attempt " << (retry + 1) << "/" 
+                      << kMaxGapResolveRetries << "): attempted=" << res.attempted
                       << ", fetched=" << res.fetched
                       << ", applied_deletes=" << res.applied_deletes;
+            if (res.fetched == res.attempted) {
+                // All gaps resolved successfully
+                break;
+            }
+            // Some gaps failed, retry after short delay
+            if (retry + 1 < kMaxGapResolveRetries) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
     }
 
     LOG(INFO) << "Final catch-up sync from etcd before promotion...";
     EtcdOpLogStore oplog_store(cluster_id_, /*enable_latest_seq_batch_update=*/false);
     const size_t batch_size = 1000;
-    uint64_t start_seq = current_applied_seq_id + 1;
+    
+    // P0 fix: Prevent underflow when current_applied_seq_id is 0
+    // ReadOpLogSince reads entries with seq > given_seq, so we pass current_applied_seq_id directly
+    uint64_t read_from_seq = current_applied_seq_id;  // Will read entries with seq > read_from_seq
+    
+    // P1 fix: Add timeout control to prevent infinite blocking
+    static constexpr size_t kMaxCatchUpBatches = 100;  // Max 100 batches * 1000 = 100k entries
+    static constexpr auto kMaxCatchUpDuration = std::chrono::seconds(30);
+    auto catch_up_start = std::chrono::steady_clock::now();
+    
     size_t total_applied = 0;
+    size_t batch_count = 0;
+    
     for (;;) {
+        // Check timeout
+        auto elapsed = std::chrono::steady_clock::now() - catch_up_start;
+        if (elapsed > kMaxCatchUpDuration) {
+            LOG(WARNING) << "Final catch-up: timeout after " 
+                         << std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()
+                         << "s. Proceeding with promotion. total_applied=" << total_applied;
+            break;
+        }
+        
+        // Check batch limit
+        if (batch_count >= kMaxCatchUpBatches) {
+            LOG(WARNING) << "Final catch-up: reached max batch limit (" << kMaxCatchUpBatches
+                         << "). Proceeding with promotion. total_applied=" << total_applied;
+            break;
+        }
+        
         std::vector<OpLogEntry> batch;
-        ErrorCode read_err = oplog_store.ReadOpLogSince(start_seq - 1, batch_size, batch);
+        ErrorCode read_err = oplog_store.ReadOpLogSince(read_from_seq, batch_size, batch);
         if (read_err != ErrorCode::OK) {
             LOG(WARNING) << "Final catch-up: failed to read OpLog since seq="
-                         << (start_seq - 1) << ", err=" << read_err
+                         << read_from_seq << ", err=" << static_cast<int>(read_err)
                          << ". Proceeding with promotion.";
             break;
         }
@@ -364,9 +405,11 @@ std::unique_ptr<MasterService> HotStandbyService::Promote() {
         }
         size_t applied = oplog_applier_->ApplyOpLogEntries(batch);
         total_applied += applied;
-        start_seq = batch.back().sequence_id + 1;
+        read_from_seq = batch.back().sequence_id;  // Next read will get entries > this seq
+        ++batch_count;
     }
-    LOG(INFO) << "Final catch-up sync done. total_applied=" << total_applied;
+    LOG(INFO) << "Final catch-up sync done. total_applied=" << total_applied
+              << ", batches=" << batch_count;
 
     // Transition to PROMOTED state
     state_machine_.ProcessEvent(StandbyEvent::PROMOTION_SUCCESS);
