@@ -213,7 +213,7 @@ TEST_F(OpLogApplierTest, TestApplyOutOfOrder) {
     EXPECT_TRUE(mock_metadata_store_->Exists("key3"));
     
     // ProcessPendingEntries may return 0 if entry3 was already processed
-    size_t processed = applier_->ProcessPendingEntries();
+    (void)applier_->ProcessPendingEntries();
     EXPECT_EQ(4u, applier_->GetExpectedSequenceId());
 }
 
@@ -441,7 +441,7 @@ TEST_F(OpLogApplierTest, TestProcessPendingEntries) {
     EXPECT_TRUE(mock_metadata_store_->Exists("key3"));
     
     // ProcessPendingEntries may return 0 if entry3 was already processed
-    size_t processed2 = applier_->ProcessPendingEntries();
+    (void)applier_->ProcessPendingEntries();
     EXPECT_EQ(4u, applier_->GetExpectedSequenceId());
 }
 
@@ -586,7 +586,7 @@ TEST_F(OpLogApplierTest, TestApplyOpLogEntries_WithGaps) {
     EXPECT_TRUE(mock_metadata_store_->Exists("key3"));
     
     // ProcessPendingEntries may return 0 if entry3 was already processed
-    size_t processed = applier_->ProcessPendingEntries();
+    (void)applier_->ProcessPendingEntries();
     EXPECT_GE(applier_->GetExpectedSequenceId(), 4u);
 }
 
