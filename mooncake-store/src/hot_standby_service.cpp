@@ -112,7 +112,7 @@ ErrorCode HotStandbyService::Start(const std::string& primary_address,
     auto result = state_machine_.ProcessEvent(StandbyEvent::START);
     if (!result.allowed) {
         LOG(ERROR) << "Cannot start HotStandbyService: " << result.reason;
-        return ErrorCode::INVALID_STATE;
+        return ErrorCode::INTERNAL_ERROR;  // State machine rejected START
     }
 
     config_.primary_address = primary_address;
