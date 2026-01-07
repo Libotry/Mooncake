@@ -4,6 +4,38 @@ package main
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Trampolines to invoke C/C++ function pointers safely from Go via cgo.
+// NOTE: Calling a C function pointer by converting it to a Go func is undefined
+// and can crash. Always go through a C helper like these.
+
+typedef void (*watch_cb_v1_t)(void* ctx,
+                             const char* key, size_t keySize,
+                             const char* value, size_t valueSize,
+                             int eventType);
+
+static inline void call_watch_cb_v1(void* func,
+                                    void* ctx,
+                                    const char* key, size_t keySize,
+                                    const char* value, size_t valueSize,
+                                    int eventType) {
+  ((watch_cb_v1_t)func)(ctx, key, keySize, value, valueSize, eventType);
+}
+
+typedef void (*watch_cb_v2_t)(void* ctx,
+                             const char* key, size_t keySize,
+                             const char* value, size_t valueSize,
+                             int eventType,
+                             long long modRev);
+
+static inline void call_watch_cb_v2(void* func,
+                                    void* ctx,
+                                    const char* key, size_t keySize,
+                                    const char* value, size_t valueSize,
+                                    int eventType,
+                                    long long modRev) {
+  ((watch_cb_v2_t)func)(ctx, key, keySize, value, valueSize, eventType, modRev);
+}
 */
 import "C"
 
@@ -740,10 +772,8 @@ func EtcdStoreWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, callbackC
 						valueSize = 0
 					}
 
-					// Call the C callback function
-					// Convert unsafe.Pointer to function pointer type and call it
-					callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int))(callbackFunc)
-					(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType)
+					// Call the C callback function via C trampoline (safe ABI)
+					C.call_watch_cb_v1(callbackFunc, callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType)
 
 					// Free the C strings
 					C.free(unsafe.Pointer(keyPtr))
@@ -828,8 +858,8 @@ func EtcdStoreWatchWithPrefixFromRevisionWrapper(prefix *C.char, prefixSize C.in
 						valueSize = 0
 					}
 
-					callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int))(callbackFunc)
-					(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType)
+					// Call the C callback function via C trampoline (safe ABI)
+					C.call_watch_cb_v1(callbackFunc, callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType)
 
 					C.free(unsafe.Pointer(keyPtr))
 					if valuePtr != nil {
@@ -923,8 +953,8 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 									validCallbackContextMutex.Unlock()
 								}
 							}()
-							callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-							(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+							// Call the C callback function via C trampoline (safe ABI)
+							C.call_watch_cb_v2(callbackFunc, callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
 						}()
 						return
 					}
@@ -957,8 +987,8 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 									validCallbackContextMutex.Unlock()
 								}
 							}()
-							callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-							(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+							// Call the C callback function via C trampoline (safe ABI)
+							C.call_watch_cb_v2(callbackFunc, callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
 						}()
 						return
 					}
@@ -1075,8 +1105,8 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 								}()
 								// Callback signature:
 								// void cb(void* ctx, char* key, size_t keySize, char* value, size_t valueSize, int eventType, long long modRev)
-								callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-								(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
+								// Call the C callback function via C trampoline (safe ABI)
+								C.call_watch_cb_v2(callbackFunc, callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
 							}()
 						}
 					}
@@ -1122,10 +1152,9 @@ func cancelAndDeletePrefixWatch(p string) int {
 //export EtcdStoreCancelWatchWithPrefixWrapper
 func EtcdStoreCancelWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, errMsg **C.char) int {
 	p := C.GoStringN(prefix, prefixSize)
-	if cancelAndDeletePrefixWatch(p) == -1 {
-		*errMsg = C.CString("no watch context found for the given prefix")
-		return -1
-	}
+	// Idempotent cancel: callers may cancel pre-emptively before starting a watch.
+	// If no context exists, treat it as success.
+	_ = cancelAndDeletePrefixWatch(p)
 	return 0
 }
 
