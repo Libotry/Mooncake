@@ -104,7 +104,17 @@ void HotStandbyService::StandbyMetadataStore::Snapshot(
 }
 
 HotStandbyService::~HotStandbyService() {
+    // Always ensure threads are joined, regardless of state
+    // This prevents std::terminate() if threads are still joinable
     Stop();
+    
+    // Double-check: ensure all threads are joined even if Stop() had early return
+    if (replication_thread_.joinable()) {
+        replication_thread_.join();
+    }
+    if (verification_thread_.joinable()) {
+        verification_thread_.join();
+    }
 }
 
 ErrorCode HotStandbyService::Start(const std::string& primary_address,
@@ -232,7 +242,13 @@ void HotStandbyService::OnWatcherEvent(StandbyEvent event) {
 }
 
 void HotStandbyService::Stop() {
-    if (!IsRunning() && GetState() != StandbyState::PROMOTING) {
+    // Check if already stopped (to avoid duplicate processing)
+    bool was_running = IsRunning();
+    StandbyState current_state = GetState();
+    
+    if (!was_running && current_state != StandbyState::PROMOTING && 
+        !replication_thread_.joinable() && !verification_thread_.joinable()) {
+        // Already fully stopped and threads are joined
         return;
     }
 
