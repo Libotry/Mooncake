@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -35,7 +37,8 @@ class StandbyServiceGuard {
         if (service_) {
             service_->Stop();
             // Give etcd watch goroutines time to clean up
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            // Increased delay to allow watch streams to fully close
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
     }
     // Disable copy and move
@@ -50,6 +53,11 @@ class StandbyServiceGuard {
 
 class HotStandbyIntegrationTest : public ::testing::Test {
    protected:
+    // Static mutex to ensure tests run serially and prevent etcd resource conflicts
+    static std::mutex test_mutex_;
+    // Per-test lock guard to ensure lock is released even if test fails
+    std::unique_ptr<std::lock_guard<std::mutex>> test_lock_;
+
     static void SetUpTestSuite() {
 #ifdef STORE_USE_ETCD
         // Initialize glog
@@ -81,6 +89,9 @@ class HotStandbyIntegrationTest : public ::testing::Test {
 
     void SetUp() override {
 #ifdef STORE_USE_ETCD
+        // Acquire lock to ensure tests run serially
+        // Use lock_guard to ensure lock is released even if test fails
+        test_lock_ = std::make_unique<std::lock_guard<std::mutex>>(test_mutex_);
         // Clean up test data before each test
         CleanupTestData();
 #endif
@@ -91,8 +102,10 @@ class HotStandbyIntegrationTest : public ::testing::Test {
         // Clean up test data after each test
         CleanupTestData();
         // Give etcd watch goroutines time to clean up before next test
-        // This helps prevent resource leaks and race conditions
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // Increased delay to allow watch streams and gRPC connections to fully close
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        // Release lock (lock_guard will automatically unlock in destructor)
+        test_lock_.reset();
 #endif
     }
 
@@ -867,6 +880,13 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
 #endif
 }
 
+}  // namespace testing
+}  // namespace mooncake
+
+// Define static member
+namespace mooncake {
+namespace testing {
+std::mutex HotStandbyIntegrationTest::test_mutex_;
 }  // namespace testing
 }  // namespace mooncake
 
