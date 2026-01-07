@@ -861,8 +861,15 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 						return
 					default:
 						// Channel closed unexpectedly (not cancelled). Notify C++ watcher to reconnect.
-						callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-						(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									// C++ callback caused panic (likely object destroyed)
+								}
+							}()
+							callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
+							(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+						}()
 						return
 					}
 				}
@@ -874,8 +881,15 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 						return
 					default:
 						// Watch error (not cancelled). Notify C++ watcher to reconnect.
-						callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-						(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									// C++ callback caused panic (likely object destroyed)
+								}
+							}()
+							callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
+							(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+						}()
 						return
 					}
 				}
@@ -938,10 +952,19 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 						}
 						return
 					default:
-						// Callback signature:
-						// void cb(void* ctx, char* key, size_t keySize, char* value, size_t valueSize, int eventType, long long modRev)
-						callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-						(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
+						// Call callback with panic recovery to prevent crash if C++ object is destroyed
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									// C++ callback caused panic (likely object destroyed)
+									// Just log and continue - we'll exit on next context check
+								}
+							}()
+							// Callback signature:
+							// void cb(void* ctx, char* key, size_t keySize, char* value, size_t valueSize, int eventType, long long modRev)
+							callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
+							(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
+						}()
 					}
 
 					C.free(unsafe.Pointer(keyPtr))

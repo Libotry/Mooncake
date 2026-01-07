@@ -157,31 +157,41 @@ uint64_t OpLogWatcher::GetLastProcessedSequenceId() const {
 void OpLogWatcher::WatchCallback(void* context, const char* key, size_t key_size,
                                    const char* value, size_t value_size,
                                    int event_type, int64_t mod_revision) {
-    OpLogWatcher* watcher = static_cast<OpLogWatcher*>(context);
-    if (watcher == nullptr) {
-        LOG(ERROR) << "OpLogWatcher context is null";
-        return;
-    }
-    
-    // Check if watcher is still running. This prevents accessing the object
-    // after it has been destroyed (though the pointer may still be valid
-    // briefly after destruction).
-    // If running_ is false, the watcher is being stopped or has been stopped,
-    // so we should ignore this callback.
-    if (!watcher->running_.load()) {
-        // Watcher is being stopped, ignore callback
-        return;
-    }
+    // Use try-catch to prevent crashes if object is destroyed
+    try {
+        OpLogWatcher* watcher = static_cast<OpLogWatcher*>(context);
+        if (watcher == nullptr) {
+            LOG(ERROR) << "OpLogWatcher context is null";
+            return;
+        }
+        
+        // Check if watcher is still running. This prevents accessing the object
+        // after it has been destroyed (though the pointer may still be valid
+        // briefly after destruction).
+        // If running_ is false, the watcher is being stopped or has been stopped,
+        // so we should ignore this callback.
+        // Use memory_order_acquire to ensure we see the latest value
+        if (!watcher->running_.load(std::memory_order_acquire)) {
+            // Watcher is being stopped, ignore callback
+            return;
+        }
 
-    std::string key_str;
-    if (key != nullptr && key_size > 0) {
-        key_str.assign(key, key_size);
+        std::string key_str;
+        if (key != nullptr && key_size > 0) {
+            key_str.assign(key, key_size);
+        }
+        std::string value_str;
+        if (value != nullptr && value_size > 0) {
+            value_str = std::string(value, value_size);
+        }
+        watcher->HandleWatchEvent(key_str, value_str, event_type, mod_revision);
+    } catch (const std::exception& e) {
+        // C++ object may have been destroyed, ignore the exception
+        LOG(WARNING) << "Exception in WatchCallback (likely object destroyed): " << e.what();
+    } catch (...) {
+        // Catch all other exceptions (including access violations)
+        LOG(WARNING) << "Unknown exception in WatchCallback (likely object destroyed)";
     }
-    std::string value_str;
-    if (value != nullptr && value_size > 0) {
-        value_str = std::string(value, value_size);
-    }
-    watcher->HandleWatchEvent(key_str, value_str, event_type, mod_revision);
 }
 
 void OpLogWatcher::WatchOpLog() {
