@@ -201,6 +201,12 @@ void OpLogWatcher::WatchOpLog() {
     std::string watch_prefix = "/oplog/" + cluster_id_ + "/";
 
     while (running_.load()) {
+        // Cancel any existing watch before starting a new one
+        // This prevents "prefix already being watched" errors
+        EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
+        // Give the old goroutine time to exit
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        
         // Start watching - pass static callback function and this pointer as context
         EtcdRevisionId start_rev =
             static_cast<EtcdRevisionId>(next_watch_revision_.load());
@@ -213,6 +219,9 @@ void OpLogWatcher::WatchOpLog() {
                        << ", error=" << static_cast<int>(err);
             watch_healthy_.store(false);
             NotifyStateEvent(StandbyEvent::WATCH_BROKEN);
+            
+            // Wait a bit longer before retrying, to ensure old goroutines have time to exit
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
             
             // Try to reconnect
             TryReconnect();
@@ -247,6 +256,8 @@ void OpLogWatcher::WatchOpLog() {
         if (running_.load() && !watch_healthy_.load()) {
             // Cancel current watch before reconnecting
             EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
+            // Give goroutine time to exit before reconnecting
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
             NotifyStateEvent(StandbyEvent::WATCH_BROKEN);
             TryReconnect();
         }
