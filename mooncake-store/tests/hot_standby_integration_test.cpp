@@ -820,8 +820,10 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
 
     // 创建一个接近但不超过最大 payload 大小的 JSON
-    // kMaxPayloadSize = 10MB, 我们使用 9MB 来测试
-    const size_t large_payload_size = 9 * 1024 * 1024;  // 9MB
+    // Note: etcd has a default max message size of 2MB (--max-request-bytes).
+    // We use 1.5MB to stay safely under this limit without requiring etcd config changes.
+    // kMaxPayloadSize = 10MB, but for integration tests we use 1.5MB to work with default etcd settings.
+    const size_t large_payload_size = 1536 * 1024;  // 1.5MB (safe for default etcd 2MB limit)
     std::string large_payload = R"({"client_id_first":1,"client_id_second":2,"size":1024,"replicas":[])";
     size_t padding_size = large_payload_size - large_payload.size() - 1;
     if (padding_size > 0) {
