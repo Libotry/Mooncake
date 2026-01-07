@@ -111,6 +111,12 @@ void OpLogWatcher::Stop() {
         LOG(WARNING) << "Failed to cancel watch for prefix " << watch_prefix
                      << ", error=" << static_cast<int>(err);
     }
+    
+    // Give Go goroutine time to finish cleanup before destroying this object.
+    // The goroutine may try to call the C++ callback after cancellation,
+    // so we need to ensure the callback context (this pointer) remains valid
+    // long enough for the goroutine to complete.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 #endif
 
     // Wait for watch thread to finish
@@ -152,6 +158,16 @@ void OpLogWatcher::WatchCallback(void* context, const char* key, size_t key_size
     OpLogWatcher* watcher = static_cast<OpLogWatcher*>(context);
     if (watcher == nullptr) {
         LOG(ERROR) << "OpLogWatcher context is null";
+        return;
+    }
+    
+    // Check if watcher is still running. This prevents accessing the object
+    // after it has been destroyed (though the pointer may still be valid
+    // briefly after destruction).
+    // If running_ is false, the watcher is being stopped or has been stopped,
+    // so we should ignore this callback.
+    if (!watcher->running_.load()) {
+        // Watcher is being stopped, ignore callback
         return;
     }
 
