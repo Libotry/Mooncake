@@ -853,16 +853,31 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 			select {
 			case watchResp, ok := <-watchChan:
 				if !ok {
-					// Channel closed unexpectedly. Notify C++ watcher to reconnect.
-					callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-					(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
-					return
+					// Channel closed. Check if context was cancelled.
+					// If cancelled, don't call callback as C++ object may be destroyed.
+					select {
+					case <-ctx.Done():
+						// Context was cancelled, just return without calling callback
+						return
+					default:
+						// Channel closed unexpectedly (not cancelled). Notify C++ watcher to reconnect.
+						callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
+						(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+						return
+					}
 				}
 				if watchResp.Err() != nil {
-					// Watch error, stop watching. Notify C++ watcher to reconnect.
-					callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-					(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
-					return
+					// Watch error. Check if context was cancelled before calling callback.
+					select {
+					case <-ctx.Done():
+						// Context was cancelled, just return without calling callback
+						return
+					default:
+						// Watch error (not cancelled). Notify C++ watcher to reconnect.
+						callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
+						(*callbackType)(callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+						return
+					}
 				}
 
 				// Use response-level revision as a more stable resume point.
@@ -874,6 +889,15 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 				}
 
 				for _, event := range watchResp.Events {
+					// Check if context was cancelled before processing each event
+					select {
+					case <-ctx.Done():
+						// Context was cancelled, stop processing events
+						return
+					default:
+						// Continue processing
+					}
+
 					keyStr := string(event.Kv.Key)
 					keyPtr := C.CString(keyStr)
 					keySize := C.size_t(len(keyStr))
@@ -904,10 +928,21 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 						modRev = C.longlong(respRev)
 					}
 
-					// Callback signature:
-					// void cb(void* ctx, char* key, size_t keySize, char* value, size_t valueSize, int eventType, long long modRev)
-					callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
-					(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
+					// Check context again before calling callback
+					select {
+					case <-ctx.Done():
+						// Context was cancelled, free allocated memory and return
+						C.free(unsafe.Pointer(keyPtr))
+						if valuePtr != nil {
+							C.free(unsafe.Pointer(valuePtr))
+						}
+						return
+					default:
+						// Callback signature:
+						// void cb(void* ctx, char* key, size_t keySize, char* value, size_t valueSize, int eventType, long long modRev)
+						callbackType := (*func(unsafe.Pointer, *C.char, C.size_t, *C.char, C.size_t, C.int, C.longlong))(callbackFunc)
+						(*callbackType)(callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
+					}
 
 					C.free(unsafe.Pointer(keyPtr))
 					if valuePtr != nil {

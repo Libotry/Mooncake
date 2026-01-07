@@ -104,7 +104,15 @@ void OpLogWatcher::Stop() {
     running_.store(false);
 
 #ifdef STORE_USE_ETCD
-    // Cancel the watch
+    // Wait for watch thread to finish first. This ensures that the watch thread
+    // has exited before we cancel the watch, reducing the chance of race conditions.
+    if (watch_thread_.joinable()) {
+        watch_thread_.join();
+    }
+    
+    // Now cancel the watch. This will trigger the Go goroutine to exit.
+    // The watch thread has already stopped, so we won't have race conditions
+    // with it trying to access the watcher object.
     std::string watch_prefix = "/oplog/" + cluster_id_ + "/";
     ErrorCode err = EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
     if (err != ErrorCode::OK) {
@@ -112,17 +120,11 @@ void OpLogWatcher::Stop() {
                      << ", error=" << static_cast<int>(err);
     }
     
-    // Give Go goroutine time to finish cleanup before destroying this object.
-    // The goroutine may try to call the C++ callback after cancellation,
-    // so we need to ensure the callback context (this pointer) remains valid
-    // long enough for the goroutine to complete.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // Give Go goroutine time to finish cleanup and exit.
+    // This prevents the goroutine from trying to call the C++ callback
+    // after the object has been destroyed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 #endif
-
-    // Wait for watch thread to finish
-    if (watch_thread_.joinable()) {
-        watch_thread_.join();
-    }
 
     LOG(INFO) << "OpLogWatcher stopped";
 }
