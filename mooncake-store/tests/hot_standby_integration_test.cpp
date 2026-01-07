@@ -36,9 +36,10 @@ class StandbyServiceGuard {
     ~StandbyServiceGuard() {
         if (service_) {
             service_->Stop();
-            // Give etcd watch goroutines time to clean up
-            // Increased delay to allow watch streams to fully close
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            // Give etcd watch goroutines time to clean up and exit.
+            // Increased delay to ensure all pending callbacks are processed
+            // and Go goroutines have time to exit completely.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
         }
     }
     // Disable copy and move

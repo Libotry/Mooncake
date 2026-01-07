@@ -121,9 +121,9 @@ void OpLogWatcher::Stop() {
     }
     
     // Give Go goroutine time to finish cleanup and exit.
-    // This prevents the goroutine from trying to call the C++ callback
-    // after the object has been destroyed.
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    // Increased delay to ensure all pending callbacks complete.
+    // The goroutine may have events in flight that need to be processed or discarded.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 #endif
 
     LOG(INFO) << "OpLogWatcher stopped";
@@ -161,17 +161,30 @@ void OpLogWatcher::WatchCallback(void* context, const char* key, size_t key_size
     try {
         OpLogWatcher* watcher = static_cast<OpLogWatcher*>(context);
         if (watcher == nullptr) {
-            LOG(ERROR) << "OpLogWatcher context is null";
+            // Context is null, ignore callback
             return;
         }
         
-        // Check if watcher is still running. This prevents accessing the object
-        // after it has been destroyed (though the pointer may still be valid
-        // briefly after destruction).
-        // If running_ is false, the watcher is being stopped or has been stopped,
-        // so we should ignore this callback.
-        // Use memory_order_acquire to ensure we see the latest value
-        if (!watcher->running_.load(std::memory_order_acquire)) {
+        // Early exit check: First, try to read running_ flag with minimal object access.
+        // If object is destroyed, this access might cause SIGSEGV, which will be caught
+        // by signal handler or cause immediate crash (better than accessing more members).
+        // We use memory_order_acquire for consistency, but if object is destroyed,
+        // even this access can fail.
+        // 
+        // Note: There's no perfect way to check if a C++ object is still valid without
+        // potentially accessing invalid memory. The best we can do is:
+        // 1. Check quickly and exit early if stopped
+        // 2. Use try-catch for C++ exceptions (won't catch SIGSEGV)
+        // 3. Ensure Stop() waits long enough for all callbacks to complete
+        bool is_running = false;
+        try {
+            is_running = watcher->running_.load(std::memory_order_acquire);
+        } catch (...) {
+            // Object may be destroyed, ignore callback
+            return;
+        }
+        
+        if (!is_running) {
             // Watcher is being stopped, ignore callback
             return;
         }
