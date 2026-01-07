@@ -219,6 +219,15 @@ class EtcdHelper {
     static ErrorCode CancelWatchWithPrefix(const char* prefix,
                                            const size_t prefix_size);
 
+    /*
+     * @brief Wait until a prefix watch goroutine fully exits (no more callbacks).
+     *        This should be used after CancelWatchWithPrefix to avoid shutdown races.
+     * @param timeout_ms: Wait timeout in milliseconds.
+     */
+    static ErrorCode WaitWatchWithPrefixStopped(const char* prefix,
+                                                const size_t prefix_size,
+                                                int timeout_ms);
+
    private:
     // Variables that are used to ensure the etcd client
     // is only connected once.

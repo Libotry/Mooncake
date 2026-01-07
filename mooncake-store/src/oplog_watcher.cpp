@@ -119,11 +119,12 @@ void OpLogWatcher::Stop() {
         LOG(WARNING) << "Failed to cancel watch for prefix " << watch_prefix
                      << ", error=" << static_cast<int>(err);
     }
-    
-    // Give Go goroutine time to finish cleanup and exit.
-    // Increased delay to ensure all pending callbacks complete.
-    // The goroutine may have events in flight that need to be processed or discarded.
-    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+    // Wait for Go watch goroutine to fully exit (no more callbacks).
+    // This avoids callback-after-free without relying on sleeps.
+    (void)EtcdHelper::WaitWatchWithPrefixStopped(watch_prefix.c_str(),
+                                                watch_prefix.size(),
+                                                /*timeout_ms=*/5000);
 #endif
 
     LOG(INFO) << "OpLogWatcher stopped";
@@ -216,9 +217,10 @@ void OpLogWatcher::WatchOpLog() {
     while (running_.load()) {
         // Cancel any existing watch before starting a new one
         // This prevents "prefix already being watched" errors
-        EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
-        // Give the old goroutine time to exit
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        (void)EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
+        (void)EtcdHelper::WaitWatchWithPrefixStopped(watch_prefix.c_str(),
+                                                     watch_prefix.size(),
+                                                     /*timeout_ms=*/5000);
         
         // Start watching - pass static callback function and this pointer as context
         EtcdRevisionId start_rev =
@@ -268,9 +270,10 @@ void OpLogWatcher::WatchOpLog() {
         
         if (running_.load() && !watch_healthy_.load()) {
             // Cancel current watch before reconnecting
-            EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
-            // Give goroutine time to exit before reconnecting
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            (void)EtcdHelper::CancelWatchWithPrefix(watch_prefix.c_str(), watch_prefix.size());
+            (void)EtcdHelper::WaitWatchWithPrefixStopped(watch_prefix.c_str(),
+                                                         watch_prefix.size(),
+                                                         /*timeout_ms=*/5000);
             NotifyStateEvent(StandbyEvent::WATCH_BROKEN);
             TryReconnect();
         }

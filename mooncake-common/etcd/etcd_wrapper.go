@@ -54,6 +54,8 @@ import (
 type prefixWatchInfo struct {
 	cancel          context.CancelFunc
 	callbackContext unsafe.Pointer
+	// done is closed when the watch goroutine fully exits (no more callbacks).
+	done chan struct{}
 }
 
 // Use different etcd client so they are not affected by each other,
@@ -715,9 +717,11 @@ func EtcdStoreWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, callbackC
 		*errMsg = C.CString("This prefix is already being watched")
 		return -1
 	}
+	doneCh := make(chan struct{})
 	storePrefixWatchCtx[p] = prefixWatchInfo{
 		cancel:          cancel,
 		callbackContext: callbackContext,
+		done:            doneCh,
 	}
 	storePrefixWatchMutex.Unlock()
 
@@ -727,13 +731,18 @@ func EtcdStoreWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, callbackC
 	validCallbackContextMutex.Unlock()
 
 	// Start watching in a goroutine
-	go func() {
+	go func(doneCh chan struct{}) {
 		defer func() {
 			// Unregister callback context when goroutine exits
 			validCallbackContextMutex.Lock()
 			delete(validCallbackContexts, callbackContext)
 			validCallbackContextMutex.Unlock()
-			cancelAndDeletePrefixWatch(p)
+
+			// Remove watch entry and signal completion
+			storePrefixWatchMutex.Lock()
+			delete(storePrefixWatchCtx, p)
+			storePrefixWatchMutex.Unlock()
+			close(doneCh)
 		}()
 
 		// Start watching the prefix
@@ -786,7 +795,7 @@ func EtcdStoreWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, callbackC
 				return
 			}
 		}
-	}()
+	}(doneCh)
 
 	return 0
 }
@@ -813,14 +822,32 @@ func EtcdStoreWatchWithPrefixFromRevisionWrapper(prefix *C.char, prefixSize C.in
 		*errMsg = C.CString("This prefix is already being watched")
 		return -1
 	}
+	doneCh := make(chan struct{})
 	storePrefixWatchCtx[p] = prefixWatchInfo{
 		cancel:          cancel,
 		callbackContext: callbackContext,
+		done:            doneCh,
 	}
 	storePrefixWatchMutex.Unlock()
 
-	go func() {
-		defer cancelAndDeletePrefixWatch(p)
+	// Register callback context as valid
+	validCallbackContextMutex.Lock()
+	validCallbackContexts[callbackContext] = true
+	validCallbackContextMutex.Unlock()
+
+	go func(doneCh chan struct{}) {
+		defer func() {
+			// Unregister callback context when goroutine exits
+			validCallbackContextMutex.Lock()
+			delete(validCallbackContexts, callbackContext)
+			validCallbackContextMutex.Unlock()
+
+			// Remove watch entry and signal completion
+			storePrefixWatchMutex.Lock()
+			delete(storePrefixWatchCtx, p)
+			storePrefixWatchMutex.Unlock()
+			close(doneCh)
+		}()
 
 		opts := []clientv3.OpOption{clientv3.WithPrefix()}
 		if startRevision > 0 {
@@ -870,7 +897,7 @@ func EtcdStoreWatchWithPrefixFromRevisionWrapper(prefix *C.char, prefixSize C.in
 				return
 			}
 		}
-	}()
+	}(doneCh)
 
 	return 0
 }
@@ -895,9 +922,11 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 		*errMsg = C.CString("This prefix is already being watched")
 		return -1
 	}
+	doneCh := make(chan struct{})
 	storePrefixWatchCtx[p] = prefixWatchInfo{
 		cancel:          cancel,
 		callbackContext: callbackContext,
+		done:            doneCh,
 	}
 	storePrefixWatchMutex.Unlock()
 
@@ -906,13 +935,18 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 	validCallbackContexts[callbackContext] = true
 	validCallbackContextMutex.Unlock()
 
-	go func() {
+	go func(doneCh chan struct{}) {
 		defer func() {
 			// Unregister callback context when goroutine exits
 			validCallbackContextMutex.Lock()
 			delete(validCallbackContexts, callbackContext)
 			validCallbackContextMutex.Unlock()
-			cancelAndDeletePrefixWatch(p)
+
+			// Remove watch entry and signal completion
+			storePrefixWatchMutex.Lock()
+			delete(storePrefixWatchCtx, p)
+			storePrefixWatchMutex.Unlock()
+			close(doneCh)
 		}()
 
 		opts := []clientv3.OpOption{clientv3.WithPrefix()}
@@ -1120,33 +1154,57 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 				return
 			}
 		}
-	}()
+	}(doneCh)
 
 	return 0
 }
 
 func cancelAndDeletePrefixWatch(p string) int {
+	// NOTE: We intentionally do NOT delete the prefix entry here.
+	// The watch goroutine owns deletion + closing `done`, so callers can Wait safely.
 	storePrefixWatchMutex.Lock()
 	watchInfo, exists := storePrefixWatchCtx[p]
-	if exists {
-		delete(storePrefixWatchCtx, p)
-	}
 	storePrefixWatchMutex.Unlock()
 
-	if exists {
-		// CRITICAL: Remove callback context from valid contexts FIRST
-		// This prevents any pending or future callbacks from being invoked
-		// We do this BEFORE cancelling the context to ensure maximum safety
-		validCallbackContextMutex.Lock()
-		delete(validCallbackContexts, watchInfo.callbackContext)
-		validCallbackContextMutex.Unlock()
+	if !exists {
+		return -1
+	}
 
-		// Now cancel the context to stop the watch goroutine
-		// Any callbacks that were already in flight will be rejected by the check above
-		watchInfo.cancel()
+	// CRITICAL: Invalidate callback context first, then cancel watch.
+	validCallbackContextMutex.Lock()
+	delete(validCallbackContexts, watchInfo.callbackContext)
+	validCallbackContextMutex.Unlock()
+
+	watchInfo.cancel()
+	return 0
+}
+
+//export EtcdStoreWaitWatchWithPrefixStoppedWrapper
+func EtcdStoreWaitWatchWithPrefixStoppedWrapper(prefix *C.char, prefixSize C.int, timeoutMs C.int, errMsg **C.char) int {
+	p := C.GoStringN(prefix, prefixSize)
+	storePrefixWatchMutex.Lock()
+	watchInfo, exists := storePrefixWatchCtx[p]
+	storePrefixWatchMutex.Unlock()
+
+	// If there is no watch, it's already stopped (idempotent).
+	if !exists {
 		return 0
 	}
-	return -1
+
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 5000 * time.Millisecond
+	}
+
+	select {
+	case <-watchInfo.done:
+		return 0
+	case <-time.After(timeout):
+		if errMsg != nil {
+			*errMsg = C.CString("timeout waiting for prefix watch to stop")
+		}
+		return -1
+	}
 }
 
 //export EtcdStoreCancelWatchWithPrefixWrapper
@@ -1155,6 +1213,8 @@ func EtcdStoreCancelWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, err
 	// Idempotent cancel: callers may cancel pre-emptively before starting a watch.
 	// If no context exists, treat it as success.
 	_ = cancelAndDeletePrefixWatch(p)
+	// Intentionally does not wait; use EtcdStoreWaitWatchWithPrefixStoppedWrapper.
+	_ = errMsg
 	return 0
 }
 

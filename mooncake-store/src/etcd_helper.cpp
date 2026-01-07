@@ -340,6 +340,25 @@ ErrorCode EtcdHelper::CancelWatchWithPrefix(const char* prefix,
     }
     return ErrorCode::OK;
 }
+
+ErrorCode EtcdHelper::WaitWatchWithPrefixStopped(const char* prefix,
+                                                const size_t prefix_size,
+                                                int timeout_ms) {
+    char* err_msg = nullptr;
+    int ret = EtcdStoreWaitWatchWithPrefixStoppedWrapper((char*)prefix,
+                                                         (int)prefix_size,
+                                                         timeout_ms, &err_msg);
+    if (ret != 0) {
+        LOG(ERROR) << "prefix=" << std::string(prefix, prefix_size)
+                   << ", timeout_ms=" << timeout_ms
+                   << ", error=" << (err_msg ? err_msg : "unknown");
+        if (err_msg) {
+            free(err_msg);
+        }
+        return ErrorCode::ETCD_OPERATION_ERROR;
+    }
+    return ErrorCode::OK;
+}
 #else
 ErrorCode EtcdHelper::ConnectToEtcdStoreClient(
     const std::string& etcd_endpoints) {
