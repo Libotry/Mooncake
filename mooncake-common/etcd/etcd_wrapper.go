@@ -9,6 +9,9 @@ package main
 // NOTE: Calling a C function pointer by converting it to a Go func is undefined
 // and can crash. Always go through a C helper like these.
 
+#ifndef MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
+#define MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
+
 typedef void (*watch_cb_v1_t)(void* ctx,
                              const char* key, size_t keySize,
                              const char* value, size_t valueSize,
@@ -36,6 +39,8 @@ static inline void call_watch_cb_v2(void* func,
                                     long long modRev) {
   ((watch_cb_v2_t)func)(ctx, key, keySize, value, valueSize, eventType, modRev);
 }
+
+#endif  // MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
 */
 import "C"
 
