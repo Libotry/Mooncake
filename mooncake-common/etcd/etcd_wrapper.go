@@ -18,6 +18,12 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+// prefixWatchInfo stores cancel function and callback context for a prefix watch
+type prefixWatchInfo struct {
+	cancel          context.CancelFunc
+	callbackContext unsafe.Pointer
+}
+
 // Use different etcd client so they are not affected by each other,
 // and can be configured separately.
 var (
@@ -35,11 +41,6 @@ var (
 	storeWatchCtx   = make(map[string]context.CancelFunc)
 	storeWatchMutex sync.Mutex
 	// watch contexts for prefix watch
-	// Map prefix -> cancel function and callback context
-	type prefixWatchInfo struct {
-		cancel          context.CancelFunc
-		callbackContext unsafe.Pointer
-	}
 	storePrefixWatchCtx   = make(map[string]prefixWatchInfo)
 	storePrefixWatchMutex sync.Mutex
 	// Valid callback contexts - track which C++ objects are still alive
@@ -864,7 +865,10 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 		*errMsg = C.CString("This prefix is already being watched")
 		return -1
 	}
-	storePrefixWatchCtx[p] = cancel
+	storePrefixWatchCtx[p] = prefixWatchInfo{
+		cancel:          cancel,
+		callbackContext: callbackContext,
+	}
 	storePrefixWatchMutex.Unlock()
 
 	// Register callback context as valid
