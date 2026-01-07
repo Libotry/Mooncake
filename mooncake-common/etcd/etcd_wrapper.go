@@ -35,7 +35,12 @@ var (
 	storeWatchCtx   = make(map[string]context.CancelFunc)
 	storeWatchMutex sync.Mutex
 	// watch contexts for prefix watch
-	storePrefixWatchCtx   = make(map[string]context.CancelFunc)
+	// Map prefix -> cancel function and callback context
+	type prefixWatchInfo struct {
+		cancel          context.CancelFunc
+		callbackContext unsafe.Pointer
+	}
+	storePrefixWatchCtx   = make(map[string]prefixWatchInfo)
 	storePrefixWatchMutex sync.Mutex
 	// Valid callback contexts - track which C++ objects are still alive
 	// When a watch is cancelled, we remove the context from this map
@@ -670,19 +675,33 @@ func EtcdStoreWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, callbackC
 	// Create a context with cancel function
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Store the cancel function
+	// Store the cancel function and callback context
 	storePrefixWatchMutex.Lock()
 	if _, exists := storePrefixWatchCtx[p]; exists {
 		storePrefixWatchMutex.Unlock()
 		*errMsg = C.CString("This prefix is already being watched")
 		return -1
 	}
-	storePrefixWatchCtx[p] = cancel
+	storePrefixWatchCtx[p] = prefixWatchInfo{
+		cancel:          cancel,
+		callbackContext: callbackContext,
+	}
 	storePrefixWatchMutex.Unlock()
+
+	// Register callback context as valid
+	validCallbackContextMutex.Lock()
+	validCallbackContexts[callbackContext] = true
+	validCallbackContextMutex.Unlock()
 
 	// Start watching in a goroutine
 	go func() {
-		defer cancelAndDeletePrefixWatch(p)
+		defer func() {
+			// Unregister callback context when goroutine exits
+			validCallbackContextMutex.Lock()
+			delete(validCallbackContexts, callbackContext)
+			validCallbackContextMutex.Unlock()
+			cancelAndDeletePrefixWatch(p)
+		}()
 
 		// Start watching the prefix
 		watchChan := storeClient.Watch(ctx, p, clientv3.WithPrefix())
@@ -756,14 +775,17 @@ func EtcdStoreWatchWithPrefixFromRevisionWrapper(prefix *C.char, prefixSize C.in
 	// Create a context with cancel function
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Store the cancel function
+	// Store the cancel function and callback context
 	storePrefixWatchMutex.Lock()
 	if _, exists := storePrefixWatchCtx[p]; exists {
 		storePrefixWatchMutex.Unlock()
 		*errMsg = C.CString("This prefix is already being watched")
 		return -1
 	}
-	storePrefixWatchCtx[p] = cancel
+	storePrefixWatchCtx[p] = prefixWatchInfo{
+		cancel:          cancel,
+		callbackContext: callbackContext,
+	}
 	storePrefixWatchMutex.Unlock()
 
 	go func() {
@@ -1056,11 +1078,20 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 
 func cancelAndDeletePrefixWatch(p string) int {
 	storePrefixWatchMutex.Lock()
-	defer storePrefixWatchMutex.Unlock()
-
-	if cancel, exists := storePrefixWatchCtx[p]; exists {
-		cancel()
+	watchInfo, exists := storePrefixWatchCtx[p]
+	if exists {
 		delete(storePrefixWatchCtx, p)
+	}
+	storePrefixWatchMutex.Unlock()
+
+	if exists {
+		// Cancel the context first
+		watchInfo.cancel()
+		// Remove callback context from valid contexts immediately
+		// This prevents any pending callbacks from being invoked
+		validCallbackContextMutex.Lock()
+		delete(validCallbackContexts, watchInfo.callbackContext)
+		validCallbackContextMutex.Unlock()
 		return 0
 	}
 	return -1
