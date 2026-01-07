@@ -1047,6 +1047,21 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 							}
 							return
 						default:
+							// Final check: verify context is still valid immediately before calling
+							// This minimizes the time window between check and call
+							validCallbackContextMutex.RLock()
+							_, stillValid := validCallbackContexts[callbackContext]
+							validCallbackContextMutex.RUnlock()
+
+							if !stillValid {
+								// Context was invalidated between previous check and now, skip callback
+								C.free(unsafe.Pointer(keyPtr))
+								if valuePtr != nil {
+									C.free(unsafe.Pointer(valuePtr))
+								}
+								return
+							}
+
 							// Call callback with panic recovery to prevent crash if C++ object is destroyed
 							func() {
 								defer func() {
@@ -1089,13 +1104,16 @@ func cancelAndDeletePrefixWatch(p string) int {
 	storePrefixWatchMutex.Unlock()
 
 	if exists {
-		// Cancel the context first
-		watchInfo.cancel()
-		// Remove callback context from valid contexts immediately
-		// This prevents any pending callbacks from being invoked
+		// CRITICAL: Remove callback context from valid contexts FIRST
+		// This prevents any pending or future callbacks from being invoked
+		// We do this BEFORE cancelling the context to ensure maximum safety
 		validCallbackContextMutex.Lock()
 		delete(validCallbackContexts, watchInfo.callbackContext)
 		validCallbackContextMutex.Unlock()
+
+		// Now cancel the context to stop the watch goroutine
+		// Any callbacks that were already in flight will be rejected by the check above
+		watchInfo.cancel()
 		return 0
 	}
 	return -1
