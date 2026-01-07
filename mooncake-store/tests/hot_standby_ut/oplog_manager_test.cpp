@@ -27,7 +27,7 @@ class OpLogManagerTest : public ::testing::Test {
     std::unique_ptr<OpLogManager> manager_;
 };
 
-// ========== 2.1.1 基本功能测试 ==========
+// ========== 2.1.1 Basic functionality tests ==========
 
 TEST_F(OpLogManagerTest, TestAppendEntry) {
     uint64_t id = M().Append(OpType::PUT_END, "key1", "value1");
@@ -58,7 +58,7 @@ TEST_F(OpLogManagerTest, TestAllocateEntry) {
     EXPECT_EQ(e2.sequence_id, M().GetLastSequenceId());
     EXPECT_EQ(2u, M().GetEntryCount());
 
-    // 基本字段校验
+    // Basic field validation
     EXPECT_EQ(OpType::PUT_END, e1.op_type);
     EXPECT_EQ("key1", e1.object_key);
     EXPECT_EQ("value1", e1.payload);
@@ -68,7 +68,7 @@ TEST_F(OpLogManagerTest, TestAllocateEntry) {
 }
 
 TEST_F(OpLogManagerTest, TestPersistEntryToEtcd) {
-    // 当前未设置 EtcdOpLogStore，PersistEntryToEtcd 应返回错误
+    // Without an EtcdOpLogStore configured, PersistEntryToEtcd should return an error
     OpLogEntry entry =
         M().AllocateEntry(OpType::PUT_END, "key", "payload-data");
 
@@ -77,7 +77,7 @@ TEST_F(OpLogManagerTest, TestPersistEntryToEtcd) {
 }
 
 TEST_F(OpLogManagerTest, TestAppendAndPersist) {
-    // 未设置 EtcdOpLogStore，AppendAndPersist 应返回错误
+    // Without an EtcdOpLogStore configured, AppendAndPersist should return an error
     auto res = M().AppendAndPersist(OpType::REMOVE, "key", "");
     ASSERT_FALSE(res.has_value());
     EXPECT_EQ(ErrorCode::ETCD_OPERATION_ERROR, res.error());
@@ -92,7 +92,7 @@ TEST_F(OpLogManagerTest, SetInitialSequenceIdOnEmptyManager) {
     M().SetInitialSequenceId(100);
     EXPECT_EQ(100u, M().GetLastSequenceId());
 
-    // 第一个追加的条目应为 101
+    // The first appended entry should have sequence_id 101
     uint64_t id = M().Append(OpType::PUT_END, "key", "value");
     EXPECT_EQ(101u, id);
 }
@@ -101,15 +101,15 @@ TEST_F(OpLogManagerTest, SetInitialSequenceIdIgnoredWhenNotEmpty) {
     uint64_t id1 = M().Append(OpType::PUT_END, "key1", "value1");
     EXPECT_EQ(id1, M().GetLastSequenceId());
 
-    // 非空时设置 initial sequence id 应被忽略
+    // Setting initial sequence id on a non-empty manager should be ignored
     M().SetInitialSequenceId(500);
     EXPECT_EQ(id1, M().GetLastSequenceId());
 }
 
-// ========== 2.1.2 校验和测试 ==========
+// ========== 2.1.2 Checksum tests ==========
 
 TEST_F(OpLogManagerTest, TestChecksumComputation) {
-    // 相同 payload => checksum 相同；不同 payload => checksum 不同
+    // Same payload => same checksum; different payload => different checksum
     OpLogEntry e1 = M().AllocateEntry(OpType::PUT_END, "k1", "payload-X");
     OpLogEntry e2 = M().AllocateEntry(OpType::PUT_END, "k2", "payload-X");
     OpLogEntry e3 = M().AllocateEntry(OpType::PUT_END, "k3", "payload-Y");
@@ -119,7 +119,7 @@ TEST_F(OpLogManagerTest, TestChecksumComputation) {
 }
 
 TEST_F(OpLogManagerTest, TestPrefixHashComputation) {
-    // 相同 key => prefix_hash 相同；不同 key => prefix_hash（高概率）不同
+    // Same key => same prefix_hash; different key => (with high probability) different prefix_hash
     OpLogEntry e1 = M().AllocateEntry(OpType::PUT_END, "same-key", "v1");
     OpLogEntry e2 = M().AllocateEntry(OpType::PUT_END, "same-key", "v2");
     OpLogEntry e3 = M().AllocateEntry(OpType::PUT_END, "other-key", "v3");
@@ -133,12 +133,12 @@ TEST_F(OpLogManagerTest, TestVerifyChecksum) {
         M().AllocateEntry(OpType::PUT_END, "key", "payload-data");
     EXPECT_TRUE(OpLogManager::VerifyChecksum(entry));
 
-    // 修改 payload 后校验应失败
+    // Verification should fail after tampering with the payload
     entry.payload = "tampered";
     EXPECT_FALSE(OpLogManager::VerifyChecksum(entry));
 }
 
-// ========== 2.1.3 大小验证测试 ==========
+// ========== 2.1.3 Size validation tests ==========
 
 TEST_F(OpLogManagerTest, TestValidateEntrySize_Valid) {
     OpLogEntry entry;
@@ -171,7 +171,7 @@ TEST_F(OpLogManagerTest, TestValidateEntrySize_PayloadTooLarge) {
 }
 
 TEST_F(OpLogManagerTest, TestValidateEntrySize_EmptyKey) {
-    // 当前实现只限制上限，不限制空 key，验证行为为接受
+    // Current implementation only enforces upper bounds; empty keys are accepted
     OpLogEntry entry;
     entry.object_key = "";
     entry.payload = "payload";
@@ -180,7 +180,7 @@ TEST_F(OpLogManagerTest, TestValidateEntrySize_EmptyKey) {
     EXPECT_TRUE(OpLogManager::ValidateEntrySize(entry, &reason));
 }
 
-// ========== 2.1.4 ETCD 集成测试（占位） ==========
+// ========== 2.1.4 Etcd integration tests (placeholder) ==========
 
 TEST_F(OpLogManagerTest, TestWriteToEtcd_Success) {
 #if defined(STORE_USE_ETCD)
@@ -205,10 +205,10 @@ TEST_F(OpLogManagerTest, TestIdempotentWrite) {
     GTEST_SKIP() << "TODO: idempotent write belongs to EtcdOpLogStore::WriteOpLog tests.";
 }
 
-// ========== 2.1.5 边界条件测试 ==========
+// ========== 2.1.5 Boundary condition tests ==========
 
 TEST_F(OpLogManagerTest, TestSequenceIdWrapAround) {
-    // 理论回绕测试：设置接近 UINT64_MAX 的初始值，验证后续 seq 按 wrap-around 语义递增
+    // Theoretical wrap-around test: set initial value near UINT64_MAX and verify wrap-around semantics
     uint64_t near_max = std::numeric_limits<uint64_t>::max() - 2;
     M().SetInitialSequenceId(near_max);
 
@@ -218,9 +218,9 @@ TEST_F(OpLogManagerTest, TestSequenceIdWrapAround) {
     ids.push_back(M().Append(OpType::PUT_END, "k3", "v3"));  // 0 (wrap)
 
     ASSERT_EQ(3u, ids.size());
-    // 利用 wrap-around 安全比较函数验证单调递增
+    // Use wrap-around-safe comparison helpers to verify monotonic increase
     EXPECT_TRUE(IsSequenceNewer(ids[1], ids[0]));
-    EXPECT_TRUE(IsSequenceNewer(ids[2], ids[1]));  // 0 比 UINT64_MAX 更新
+    EXPECT_TRUE(IsSequenceNewer(ids[2], ids[1]));  // 0 is considered newer than UINT64_MAX
 }
 
 TEST_F(OpLogManagerTest, TestConcurrentAppend) {
@@ -250,14 +250,14 @@ TEST_F(OpLogManagerTest, TestConcurrentAppend) {
     EXPECT_EQ(static_cast<size_t>(kThreads * kPerThread), ids.size());
 
     std::sort(ids.begin(), ids.end());
-    // 检查没有重复且严格递增
+    // Ensure there are no duplicates and sequence IDs are strictly increasing
     for (size_t i = 1; i < ids.size(); ++i) {
         EXPECT_GT(ids[i], ids[i - 1]);
     }
 }
 
 TEST_F(OpLogManagerTest, TestLargePayload) {
-    // 构造接近上限的 payload，验证可以通过校验并成功追加
+    // Construct a payload close to the upper limit and verify it passes validation and appends successfully
     std::string key = "large-payload-key";
     std::string payload(OpLogManager::kMaxPayloadSize - 1, 'x');
 

@@ -156,7 +156,7 @@ class HotStandbyIntegrationTest : public ::testing::Test {
     }
 };
 
-// ========== 8.1.1 端到端测试 ==========
+// ========== 8.1.1 End-to-end tests ==========
 
 TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
 #ifndef STORE_USE_ETCD
@@ -166,12 +166,12 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 模拟 Primary 写入 OpLog 到 etcd
+    // 1. Simulate primary writing OpLog entries to etcd
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
 
-    // 写入几个测试条目
+    // Write several test entries
     std::vector<std::string> test_keys;
     std::vector<uint64_t> test_seq_ids;
     for (int i = 0; i < 10; ++i) {
@@ -190,7 +190,7 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
     uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
     LOG(INFO) << "Primary wrote " << last_seq_id << " OpLog entries";
 
-    // 2. 启动 Standby HotStandbyService
+    // 2. Start the standby HotStandbyService
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     hs_config.max_replication_lag_entries = 1000;
@@ -205,7 +205,7 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
     ASSERT_EQ(ErrorCode::OK, start_err)
         << "Failed to start HotStandbyService";
 
-    // 3. 等待 Standby 同步完成
+    // 3. Wait for the standby to finish initial sync
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     bool synced = false;
 
@@ -231,13 +231,13 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
 
     ASSERT_TRUE(synced) << "Standby failed to sync within timeout";
 
-    // 4. 验证 Standby 元数据快照
+    // 4. Verify standby metadata snapshot
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
     ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
 
     LOG(INFO) << "Standby metadata snapshot size: " << snapshot.size();
 
-    // 验证所有写入的 key 都在快照中
+    // Verify all written keys exist in the snapshot
     std::set<std::string> snapshot_keys;
     for (const auto& kv : snapshot) {
         snapshot_keys.insert(kv.first);
@@ -251,7 +251,7 @@ TEST_F(HotStandbyIntegrationTest, TestPrimaryStandbySync) {
     EXPECT_GE(snapshot.size(), test_keys.size())
         << "Standby snapshot should contain at least the test keys";
 
-    // 5. 验证序列号
+    // 5. Verify sequence IDs
     uint64_t latest_applied = standby.GetLatestAppliedSequenceId();
     EXPECT_GE(latest_applied, last_seq_id)
         << "Standby should have applied at least the last test sequence ID";
@@ -268,7 +268,7 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 写入一些 OpLog 条目
+    // 1. Write several OpLog entries
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
@@ -284,7 +284,7 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
 
     uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
 
-    // 2. 启动 Standby 并等待同步
+    // 2. Start the standby and wait for sync
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
@@ -293,7 +293,7 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
 
-    // 等待同步完成
+    // Wait until sync finishes
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         auto status = standby.GetSyncStatus();
@@ -305,21 +305,21 @@ TEST_F(HotStandbyIntegrationTest, TestStandbyPromotion) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // 3. 验证 Standby 就绪
+    // 3. Verify standby is ready for promotion
     ASSERT_TRUE(standby.IsReadyForPromotion())
         << "Standby should be ready for promotion";
 
-    // 4. 执行晋升
+    // 4. Perform promotion
     auto master = standby.Promote();
     // Note: Promote() returns nullptr as MasterService creation is handled externally
     EXPECT_EQ(nullptr, master);
 
-    // 5. 验证晋升后的序列号
+    // 5. Verify sequence ID after promotion
     uint64_t promoted_seq_id = standby.GetLatestAppliedSequenceId();
     EXPECT_GE(promoted_seq_id, last_seq_id)
         << "Promoted sequence ID should be at least the last written sequence ID";
 
-    // 6. 验证元数据快照仍然可用
+    // 6. Verify metadata snapshot is still valid after promotion
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
     ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
 
@@ -345,7 +345,7 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 模拟 Primary 写入数据
+    // 1. Simulate primary writing data
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
@@ -361,7 +361,7 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
 
     uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
 
-    // 2. 启动 Standby
+    // 2. Start the standby
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
@@ -370,7 +370,7 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
 
-    // 等待同步
+    // Wait for sync
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         auto status = standby.GetSyncStatus();
@@ -381,10 +381,10 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // 3. 模拟 Primary 故障（停止写入新的 OpLog）
-    // 在实际场景中，这可能是 Primary 进程崩溃或网络分区
+    // 3. Simulate primary failure (stop writing new OpLogs)
+    // In real scenarios this could be a primary crash or a network partition
 
-    // 4. 验证 Standby 数据完整性
+    // 4. Verify standby data integrity
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
     ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
 
@@ -398,12 +398,12 @@ TEST_F(HotStandbyIntegrationTest, TestFailoverScenario) {
             << "Key " << key << " should be in Standby after Primary failure";
     }
 
-    // 5. 执行晋升（模拟故障切换）
+    // 5. Perform promotion (simulate failover)
     ASSERT_TRUE(standby.IsReadyForPromotion());
     auto master = standby.Promote();
     EXPECT_EQ(nullptr, master);
 
-    // 6. 验证晋升后的状态
+    // 6. Verify state after promotion
     uint64_t promoted_seq_id = standby.GetLatestAppliedSequenceId();
     EXPECT_GE(promoted_seq_id, last_seq_id);
 
@@ -419,14 +419,14 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 模拟 Primary 写入混合操作
+    // 1. Simulate primary writing mixed operations
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
 
     std::map<std::string, bool> expected_keys;  // key -> should_exist
 
-    // PUT 操作
+    // PUT operations
     for (int i = 0; i < 5; ++i) {
         std::string key = "put_key_" + std::to_string(i);
         std::string payload =
@@ -435,14 +435,14 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
         expected_keys[key] = true;
     }
 
-    // REMOVE 操作
+    // REMOVE operations
     for (int i = 0; i < 2; ++i) {
         std::string key = "put_key_" + std::to_string(i);
         primary_oplog.Append(OpType::REMOVE, key, "");
-        expected_keys[key] = false;  // 被删除了
+        expected_keys[key] = false;  // Deleted
     }
 
-    // 再 PUT 一些
+    // Then PUT some more keys
     for (int i = 5; i < 8; ++i) {
         std::string key = "put_key_" + std::to_string(i);
         std::string payload =
@@ -454,7 +454,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
     uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
     LOG(INFO) << "Primary wrote " << last_seq_id << " OpLog entries";
 
-    // 2. 启动 Standby
+    // 2. Start the standby
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
@@ -463,7 +463,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
 
-    // 3. 等待同步
+    // 3. Wait for sync
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         auto status = standby.GetSyncStatus();
@@ -475,7 +475,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // 4. 验证一致性
+    // 4. Verify consistency
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
     ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
 
@@ -484,7 +484,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
         actual_keys.insert(kv.first);
     }
 
-    // 验证期望存在的 key 都在
+    // Verify all keys expected to exist are present
     for (const auto& kv : expected_keys) {
         if (kv.second) {
             EXPECT_NE(actual_keys.end(), actual_keys.find(kv.first))
@@ -495,7 +495,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
         }
     }
 
-    // 验证元数据数量
+    // Verify metadata entry count
     size_t expected_count = 0;
     for (const auto& kv : expected_keys) {
         if (kv.second) expected_count++;
@@ -508,7 +508,7 @@ TEST_F(HotStandbyIntegrationTest, TestDataConsistency) {
 #endif
 }
 
-// ========== 8.1.2 多节点测试 ==========
+// ========== 8.1.2 Multi-node tests ==========
 
 TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
 #ifndef STORE_USE_ETCD
@@ -518,7 +518,7 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 模拟 Primary 写入数据
+    // 1. Simulate primary writing data
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
@@ -534,7 +534,7 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
 
     uint64_t last_seq_id = primary_oplog.GetLastSequenceId();
 
-    // 2. 启动两个 Standby 实例
+    // 2. Start two standby instances
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
 
@@ -548,7 +548,7 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
     ASSERT_EQ(ErrorCode::OK, standby2.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
 
-    // 3. 等待两个 Standby 都同步完成
+    // 3. Wait for both standbys to finish syncing
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     bool both_synced = false;
 
@@ -570,7 +570,7 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
 
     ASSERT_TRUE(both_synced) << "Both standbys failed to sync within timeout";
 
-    // 4. 验证两个 Standby 的元数据快照一致
+    // 4. Verify metadata snapshots of both standbys are identical
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot1;
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot2;
 
@@ -590,7 +590,7 @@ TEST_F(HotStandbyIntegrationTest, TestMultipleStandbys) {
 
     EXPECT_EQ(keys1, keys2) << "Both standbys should have identical key sets";
 
-    // 5. 验证所有测试 key 都在两个 Standby 中
+    // 5. Verify all test keys are present in both standbys
     for (const auto& key : test_keys) {
         EXPECT_NE(keys1.end(), keys1.find(key))
             << "Key " << key << " not found in standby1";
@@ -610,7 +610,7 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 清理 master view（删除可能存在的旧 key）
+    // 1. Clean up master view (delete any existing key)
     MasterViewHelper mv_helper(FLAGS_hs_cluster_id);
     mv_helper.ConnectToEtcd(FLAGS_hs_etcd_endpoints);
     std::string master_view_key = mv_helper.GetMasterViewKey();
@@ -631,7 +631,7 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
                                    master_view_end_key.c_str(), master_view_end_key.size());
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    // 2. 第一个节点选举（在后台线程中运行，因为 ElectLeader 会阻塞）
+    // 2. First node election (run in background thread because ElectLeader blocks)
     std::string master1_address = "10.0.0.1:8888";
     ViewVersionId version1 = 0;
     EtcdLeaseId lease1 = 0;
@@ -642,7 +642,7 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
         election1_done = true;
     });
 
-    // 等待选举完成
+    // Wait for the election to complete
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!election1_done && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -651,18 +651,18 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
     ASSERT_TRUE(election1_done) << "Master1 election should complete";
     ASSERT_NE(0, lease1) << "Master1 should successfully elect as leader";
 
-    // 验证 master view 被设置
+    // Verify master view is set
     std::string current_master;
     ViewVersionId current_version = 0;
     ASSERT_EQ(ErrorCode::OK,
               mv_helper.GetMasterView(current_master, current_version));
     EXPECT_EQ(master1_address, current_master);
 
-    // 3. 释放第一个节点的 lease（模拟故障）
+    // 3. Cancel the first node's lease (simulate failure)
     EtcdHelper::CancelKeepAlive(lease1);
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    // 4. 第二个节点现在应该能够选举成功
+    // 4. Second node should now be able to win the election
     MasterViewHelper mv_helper2(FLAGS_hs_cluster_id);
     mv_helper2.ConnectToEtcd(FLAGS_hs_etcd_endpoints);
     std::string master2_address = "10.0.0.2:8888";
@@ -683,13 +683,13 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
     ASSERT_TRUE(election2_done) << "Master2 election should complete";
     ASSERT_NE(0, lease2) << "Master2 should successfully elect after master1 fails";
 
-    // 验证 master view 切换到第二个节点
+    // Verify master view switches to the second node
     ASSERT_EQ(ErrorCode::OK,
               mv_helper2.GetMasterView(current_master, current_version));
     EXPECT_EQ(master2_address, current_master)
         << "Master view should switch to master2";
 
-    // 清理
+    // Cleanup
     if (election1_thread.joinable()) {
         election1_thread.join();
     }
@@ -702,7 +702,7 @@ TEST_F(HotStandbyIntegrationTest, TestLeaderElection) {
 #endif
 }
 
-// ========== 8.1.3 压力测试 ==========
+// ========== 8.1.3 Stress tests ==========
 
 TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
 #ifndef STORE_USE_ETCD
@@ -712,7 +712,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 启动 Standby
+    // 1. Start the standby
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
@@ -721,7 +721,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
 
-    // 等待 Standby 进入 WATCHING 状态
+    // Wait for standby to enter WATCHING state
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
         auto status = standby.GetSyncStatus();
@@ -731,7 +731,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // 2. 模拟 Primary 高吞吐量写入
+    // 2. Simulate high-throughput writes on the primary
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
@@ -753,7 +753,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
     LOG(INFO) << "Wrote " << num_writes << " entries in "
               << write_duration.count() << "ms, last_seq_id=" << last_seq_id;
 
-    // 3. 监控 Standby lag
+    // 3. Monitor standby lag
     deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     uint64_t max_lag = 0;
 
@@ -774,7 +774,7 @@ TEST_F(HotStandbyIntegrationTest, TestHighThroughputSync) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // 4. 验证最终同步
+    // 4. Verify final sync result
     auto final_status = standby.GetSyncStatus();
     EXPECT_GE(final_status.applied_seq_id, last_seq_id)
         << "Standby should have applied all entries";
@@ -795,7 +795,7 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
         GTEST_SKIP() << "hs_etcd_endpoints not provided.";
     }
 
-    // 1. 启动 Standby
+    // 1. Start the standby
     HotStandbyConfig hs_config;
     hs_config.enable_verification = false;
     HotStandbyService standby(hs_config);
@@ -804,7 +804,7 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
     ASSERT_EQ(ErrorCode::OK, standby.Start("", FLAGS_hs_etcd_endpoints,
                                             FLAGS_hs_cluster_id));
 
-    // 等待 Standby 进入 WATCHING 状态
+    // Wait for standby to enter WATCHING state
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
         auto status = standby.GetSyncStatus();
@@ -814,14 +814,14 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // 2. 写入接近最大 payload 大小的条目
+    // 2. Write an entry with payload close to the maximum size
     OpLogManager primary_oplog;
     primary_oplog.SetEtcdOpLogStore(
         std::make_shared<EtcdOpLogStore>(FLAGS_hs_cluster_id, true));
 
-    // 创建一个接近但不超过最大 payload 大小的 JSON
-    // Note: etcd has a default max request size limit (typically 1.5MB for the entire request,
-    // including key, value, and metadata). The actual limit may be smaller than 2MB.
+    // Create a JSON payload close to but not exceeding the logical max payload size.
+    // Note: etcd has a default max request size limit for the entire request
+    // (including key, value, and metadata). The actual limit may be smaller than 2MB.
     // We use 1MB to stay safely under typical etcd limits without requiring etcd config changes.
     // kMaxPayloadSize = 10MB, but for integration tests we use 1MB to work with default etcd settings.
     const size_t large_payload_size = 1024 * 1024;  // 1MB (safe for typical etcd limits)
@@ -847,7 +847,7 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
     LOG(INFO) << "Wrote large payload entry: seq_id=" << seq_id
               << ", payload_size=" << large_payload.size();
 
-    // 3. 等待 Standby 同步
+    // 3. Wait for standby to sync
     deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     bool synced = false;
 
@@ -862,7 +862,7 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
 
     ASSERT_TRUE(synced) << "Standby failed to sync large payload entry";
 
-    // 4. 验证 Standby 元数据快照包含该 key
+    // 4. Verify standby metadata snapshot contains the key
     std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot;
     ASSERT_TRUE(standby.ExportMetadataSnapshot(snapshot));
 
@@ -876,11 +876,11 @@ TEST_F(HotStandbyIntegrationTest, TestLargePayloadSync) {
 
     EXPECT_TRUE(found) << "Large payload key should be in Standby snapshot";
 
-    // 5. 测试超过最大 payload 大小的条目应该被拒绝
+    // 5. Verify that entries exceeding the maximum payload size are rejected
     std::string oversized_payload(OpLogManager::kMaxPayloadSize + 1, 'X');
-    // 注意：OpLogManager::Append 不会直接拒绝，但 EtcdOpLogStore 或
-    // OpLogApplier 会在应用时进行验证
-    // 这里我们验证 ValidateEntrySize 会拒绝它
+    // Note: OpLogManager::Append does not directly reject oversize payloads, but
+    // EtcdOpLogStore or OpLogApplier will validate them when applying.
+    // Here we verify that ValidateEntrySize rejects such an entry.
     OpLogEntry test_entry;
     test_entry.object_key = "oversized_key";
     test_entry.payload = oversized_payload;

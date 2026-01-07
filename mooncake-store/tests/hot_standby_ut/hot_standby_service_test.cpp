@@ -39,11 +39,11 @@ class HotStandbyServiceTest : public ::testing::Test {
     std::string cluster_id_;
 };
 
-// ========== 6.1.1 启动停止测试 ==========
+// ========== 6.1.1 Start/Stop tests ==========
 
 TEST_F(HotStandbyServiceTest, TestStart) {
 #ifdef STORE_USE_ETCD
-    // 需要真实 etcd 和正确的 cluster 配置，作为集成测试占位
+    // Requires a real etcd cluster and valid cluster configuration; acts as an integration placeholder
     GTEST_SKIP() << "Requires real etcd connection, run in integration environment.";
 #else
     ErrorCode err = service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
@@ -56,7 +56,7 @@ TEST_F(HotStandbyServiceTest, TestStart_AlreadyRunning) {
 #ifdef STORE_USE_ETCD
     GTEST_SKIP() << "Requires real etcd connection to verify double start semantics.";
 #else
-    // 第一次 Start 失败后，状态为 FAILED，再次 Start 仍应返回 INTERNAL_ERROR
+    // After the first Start fails and state becomes FAILED, the second Start should still return INTERNAL_ERROR
     ErrorCode err1 = service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
     EXPECT_EQ(ErrorCode::INTERNAL_ERROR, err1);
     ErrorCode err2 = service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
@@ -76,25 +76,25 @@ TEST_F(HotStandbyServiceTest, TestStart_InvalidEtcdEndpoints) {
 }
 
 TEST_F(HotStandbyServiceTest, TestStop) {
-    // Stop 在未 Start 的情况下应该是安全的（幂等）
+    // Stop should be safe and idempotent even if Start was never called
     service_->Stop();
     SUCCEED();
 }
 
 TEST_F(HotStandbyServiceTest, TestStop_WhenNotRunning) {
-    // 多次 Stop 应该是幂等的
+    // Multiple Stop calls should be idempotent
     service_->Stop();
     service_->Stop();
     SUCCEED();
 }
 
-// ========== 6.1.2 状态转换测试 ==========
+// ========== 6.1.2 State transition tests ==========
 
 TEST_F(HotStandbyServiceTest, TestStateTransition_StartToWatching) {
 #ifdef STORE_USE_ETCD
     GTEST_SKIP() << "Requires real etcd to drive full state transition to WATCHING.";
 #else
-    // 在非 STORE_USE_ETCD 构建下，Start 会直接将状态机设置为 FAILED
+    // In non-STORE_USE_ETCD builds, Start will set the state machine directly to FAILED
     EXPECT_EQ(StandbyState::STOPPED, service_->GetState());
     ErrorCode err = service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
     EXPECT_EQ(ErrorCode::INTERNAL_ERROR, err);
@@ -106,7 +106,7 @@ TEST_F(HotStandbyServiceTest, TestStateTransition_ConnectionFailed) {
 #ifdef STORE_USE_ETCD
     GTEST_SKIP() << "Connection failure requires real etcd and invalid endpoints.";
 #else
-    // 非 etcd 模式下，无法区分具体连接失败原因，仅验证不会崩溃
+    // In non-etcd mode we cannot distinguish detailed connection errors; only verify it doesn't crash
     ErrorCode err = service_->Start("primary_unused", "bad_endpoint", cluster_id_);
     EXPECT_EQ(ErrorCode::INTERNAL_ERROR, err);
 #endif
@@ -116,13 +116,13 @@ TEST_F(HotStandbyServiceTest, TestStateTransition_SyncFailed) {
 #ifdef STORE_USE_ETCD
     GTEST_SKIP() << "Sync failure requires real etcd and OpLog watcher behavior.";
 #else
-    // 在非 etcd 模式下，同步阶段不会真正执行，仅保证调用安全
+    // In non-etcd mode, the sync phase is not actually executed; just ensure the call is safe
     ErrorCode err = service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
     EXPECT_EQ(ErrorCode::INTERNAL_ERROR, err);
 #endif
 }
 
-// ========== 6.1.3 同步状态测试 ==========
+// ========== 6.1.3 Sync status tests ==========
 
 TEST_F(HotStandbyServiceTest, TestGetSyncStatus_InitialState) {
     StandbySyncStatus status = service_->GetSyncStatus();
@@ -139,7 +139,7 @@ TEST_F(HotStandbyServiceTest, TestGetSyncStatus_AfterSync) {
     GTEST_SKIP()
         << "Requires real etcd and OpLog activity to change sync status.";
 #else
-    // 在非 etcd 模式下，调用 Start 不会改变 applied/primary，但状态机会进入 FAILED
+    // In non-etcd mode, calling Start will not change applied/primary, but the state machine enters FAILED
     (void)service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
     StandbySyncStatus status = service_->GetSyncStatus();
     EXPECT_EQ(StandbyState::FAILED, status.state);
@@ -147,16 +147,16 @@ TEST_F(HotStandbyServiceTest, TestGetSyncStatus_AfterSync) {
 }
 
 TEST_F(HotStandbyServiceTest, TestGetSyncStatus) {
-    // 基本覆盖：多次调用应返回一致且不会崩溃
+    // Basic coverage: multiple calls should return consistent values and not crash
     StandbySyncStatus s1 = service_->GetSyncStatus();
     StandbySyncStatus s2 = service_->GetSyncStatus();
     EXPECT_EQ(s1.state, s2.state);
 }
 
-// ========== 6.1.4 晋升测试 ==========
+// ========== 6.1.4 Promotion tests ==========
 
 TEST_F(HotStandbyServiceTest, TestPromote_WhenNotReady) {
-    // 初始状态下不满足晋升条件，应返回 nullptr
+    // In the initial state promotion preconditions are not met, so it should return nullptr
     auto master = service_->Promote();
     EXPECT_EQ(nullptr, master);
 }
@@ -166,7 +166,7 @@ TEST_F(HotStandbyServiceTest, TestPromote_WhenReady) {
     GTEST_SKIP()
         << "Requires real etcd and full replication pipeline to reach ready state.";
 #else
-    // 非 etcd 模式下即便强行调用，也应安全返回 nullptr
+    // Even in non-etcd mode, Promote should safely return nullptr
     auto master = service_->Promote();
     EXPECT_EQ(nullptr, master);
 #endif
@@ -212,14 +212,14 @@ TEST_F(HotStandbyServiceTest, TestPromote_BatchLimit) {
 #endif
 }
 
-// ========== 6.1.5 热启动测试 ==========
+// ========== 6.1.5 Warm start tests ==========
 
 TEST_F(HotStandbyServiceTest, TestWarmStart_WithLocalState) {
 #ifdef STORE_USE_ETCD
     GTEST_SKIP()
         << "Requires real etcd and pre-populated local metadata to test warm start.";
 #else
-    // 非 etcd 模式下，仅验证 Start 调用安全
+    // In non-etcd mode, only verify that Start is safe to call
     (void)service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
     SUCCEED();
 #endif
@@ -241,14 +241,14 @@ TEST_F(HotStandbyServiceTest, TestWarmStart_WithSnapshot) {
         << "Requires snapshot provider and real etcd to exercise snapshot bootstrap.";
 #else
     config_.enable_snapshot_bootstrap = true;
-    // 重新创建 service 以使用新的配置
+    // Recreate service to apply the new configuration
     service_.reset(new HotStandbyService(config_));
     (void)service_->Start("primary_unused", etcd_endpoints_, cluster_id_);
     SUCCEED();
 #endif
 }
 
-// ========== 6.1.6 元数据操作测试 ==========
+// ========== 6.1.6 Metadata operation tests ==========
 
 TEST_F(HotStandbyServiceTest, TestGetMetadataCount) {
     EXPECT_EQ(0u, service_->GetMetadataCount());
@@ -265,14 +265,14 @@ TEST_F(HotStandbyServiceTest, TestGetLatestAppliedSequenceId) {
     EXPECT_EQ(0u, seq);
 }
 
-// ========== 6.1.7 复制循环测试 ==========
+// ========== 6.1.7 Replication loop tests ==========
 
 TEST_F(HotStandbyServiceTest, TestReplicationLoop_UpdatesMetrics) {
 #ifdef STORE_USE_ETCD
     GTEST_SKIP()
         << "Requires real etcd and running replication loop to update metrics.";
 #else
-    // 非 etcd 模式下，ReplicationLoop 不会被启动，但调用 Stop 应该安全
+    // In non-etcd mode, ReplicationLoop is never started, but calling Stop should be safe
     service_->Stop();
     SUCCEED();
 #endif
@@ -283,13 +283,13 @@ TEST_F(HotStandbyServiceTest, TestReplicationLoop_HandlesDisconnect) {
     GTEST_SKIP()
         << "Requires real etcd and watcher disconnect to exercise disconnect path.";
 #else
-    // 调用 DisconnectFromPrimary 在当前实现中是安全的（不依赖 etcd）
+    // Calling DisconnectFromPrimary is currently safe (does not depend on etcd)
     service_->DisconnectFromPrimary();
     SUCCEED();
 #endif
 }
 
-// ========== 6.1.8 验证循环测试 ==========
+// ========== 6.1.8 Verification loop tests ==========
 
 TEST_F(HotStandbyServiceTest, TestVerificationLoop_WhenEnabled) {
 #ifdef STORE_USE_ETCD
@@ -305,7 +305,7 @@ TEST_F(HotStandbyServiceTest, TestVerificationLoop_WhenEnabled) {
 }
 
 TEST_F(HotStandbyServiceTest, TestVerificationLoop_WhenDisabled) {
-    // 默认 config_.enable_verification = false, Start 不会启动验证线程
+    // By default config_.enable_verification = false, so Start should not spawn a verification thread
 #ifdef STORE_USE_ETCD
     GTEST_SKIP()
         << "Requires real etcd connection to start service.";

@@ -93,14 +93,14 @@ class EtcdOpLogStoreTest : public ::testing::Test {
     }
 };
 
-// ========== 3.1.1 基本 CRUD 测试 ==========
+// ========== 3.1.1 Basic CRUD tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestWriteOpLog) {
     OpLogEntry e = MakeEntry(1, OpType::PUT_END, "key1", "value1");
 
     ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(e));
 
-    // 最新序列号应更新为 1
+    // Latest sequence ID should be updated to 1
     uint64_t latest = 0;
     ASSERT_EQ(ErrorCode::OK, store_->GetLatestSequenceId(latest));
     EXPECT_EQ(1u, latest);
@@ -120,7 +120,7 @@ TEST_F(EtcdOpLogStoreTest, TestReadOpLog) {
 }
 
 TEST_F(EtcdOpLogStoreTest, TestReadOpLogSince) {
-    // 写入多条
+    // Write multiple entries
     for (uint64_t i = 10; i < 15; ++i) {
         OpLogEntry e = MakeEntry(i, OpType::PUT_END,
                                  "key_" + std::to_string(i),
@@ -131,7 +131,7 @@ TEST_F(EtcdOpLogStoreTest, TestReadOpLogSince) {
     std::vector<OpLogEntry> entries;
     ASSERT_EQ(ErrorCode::OK, store_->ReadOpLogSince(11, 10, entries));
 
-    // 期望返回 seq > 11 的条目: 12,13,14
+    // Expect entries with seq > 11: 12,13,14
     ASSERT_EQ(3u, entries.size());
     EXPECT_EQ(12u, entries[0].sequence_id);
     EXPECT_EQ(13u, entries[1].sequence_id);
@@ -160,12 +160,12 @@ TEST_F(EtcdOpLogStoreTest, TestReadOpLogSince_Limit) {
     EXPECT_EQ(3u, entries[2].sequence_id);
 }
 
-// ========== 3.1.2 序列化测试 ==========
+// ========== 3.1.2 Serialization tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestSerializeDeserializeRoundTrip) {
     OpLogEntry in = MakeEntry(42, OpType::PUT_END, "roundtrip-key", "roundtrip-value");
 
-    // 使用 WriteOpLog + ReadOpLog 间接验证序列化 / 反序列化
+    // Indirectly verify serialization / deserialization via WriteOpLog + ReadOpLog
     ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(in));
 
     OpLogEntry out;
@@ -178,7 +178,7 @@ TEST_F(EtcdOpLogStoreTest, TestSerializeDeserializeRoundTrip) {
 }
 
 TEST_F(EtcdOpLogStoreTest, TestDeserializeInvalidJson) {
-    // 直接向 etcd 写入无效 JSON，之后 ReadOpLog 应返回 INTERNAL_ERROR
+    // Write invalid JSON directly into etcd; subsequent ReadOpLog should return INTERNAL_ERROR
     std::string key = "/oplog/" + cluster_id_ + "/00000000000000000077";
     std::string bad_json = "{ this is not valid json }";
     ASSERT_EQ(ErrorCode::OK,
@@ -189,17 +189,17 @@ TEST_F(EtcdOpLogStoreTest, TestDeserializeInvalidJson) {
     ASSERT_EQ(ErrorCode::INTERNAL_ERROR, store_->ReadOpLog(77, out));
 }
 
-// ========== 3.1.3 Fencing 测试 ==========
+// ========== 3.1.3 Fencing tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestWriteOpLog_Fencing) {
     OpLogEntry e1 = MakeEntry(100, OpType::PUT_END, "key_fence", "value1");
     ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(e1));
 
-    // 相同 seq, 相同内容 => 幂等（OK）
+    // Same seq, same content => idempotent (OK)
     OpLogEntry e2 = e1;
     ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(e2));
 
-    // 相同 seq, 不同内容 => 冲突（ETCD_OPERATION_ERROR）
+    // Same seq, different content => conflict (ETCD_OPERATION_ERROR)
     OpLogEntry e3 = e1;
     e3.payload = "value2";
     EXPECT_EQ(ErrorCode::ETCD_OPERATION_ERROR, store_->WriteOpLog(e3));
@@ -209,11 +209,12 @@ TEST_F(EtcdOpLogStoreTest, TestWriteOpLog_Idempotent) {
     OpLogEntry e = MakeEntry(200, OpType::PUT_END, "key_idem", "v");
     ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(e));
 
-    // 重复写入完全相同的 entry，应返回 OK（即使底层 Create 返回事务失败，也被视为幂等）
+    // Repeatedly writing the exact same entry should return OK (idempotent)
+    // even if the underlying Create operation reports a transaction failure.
     ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(e));
 }
 
-// ========== 3.1.4 序列号管理测试 ==========
+// ========== 3.1.4 Sequence ID management tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestGetLatestSequenceId) {
     OpLogEntry e1 = MakeEntry(1, OpType::PUT_END, "k1", "v1");
@@ -229,11 +230,11 @@ TEST_F(EtcdOpLogStoreTest, TestGetLatestSequenceId) {
 TEST_F(EtcdOpLogStoreTest, TestGetMaxSequenceIdAndEmpty) {
     uint64_t max_seq = 0;
 
-    // 空集群: 先清理，再调用 GetMaxSequenceId 应返回 ETCD_KEY_NOT_EXIST
+    // Empty cluster: after cleanup, GetMaxSequenceId should return ETCD_KEY_NOT_EXIST
     CleanupTestData();
     EXPECT_EQ(ErrorCode::ETCD_KEY_NOT_EXIST, store_->GetMaxSequenceId(max_seq));
 
-    // 写入几条后，MaxSequenceId 应为最后一条的 seq
+    // After writing several entries, MaxSequenceId should equal the last entry's seq
     for (uint64_t i = 10; i <= 15; ++i) {
         OpLogEntry e = MakeEntry(i, OpType::PUT_END,
                                  "key_" + std::to_string(i),
@@ -246,7 +247,7 @@ TEST_F(EtcdOpLogStoreTest, TestGetMaxSequenceIdAndEmpty) {
 }
 
 TEST_F(EtcdOpLogStoreTest, TestUpdateLatestSequenceId) {
-    // 直接调用 UpdateLatestSequenceId，然后 GetLatestSequenceId 应一致
+    // Directly call UpdateLatestSequenceId, then GetLatestSequenceId should match
     ASSERT_EQ(ErrorCode::OK, store_->UpdateLatestSequenceId(12345));
 
     uint64_t latest = 0;
@@ -254,10 +255,10 @@ TEST_F(EtcdOpLogStoreTest, TestUpdateLatestSequenceId) {
     EXPECT_EQ(12345u, latest);
 }
 
-// ========== 3.1.5 批量更新测试 ==========
+// ========== 3.1.5 Batch update tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestBatchUpdate_EnabledAndThreshold) {
-    // 使用启用 batch 的 store 写入，最后检查 /latest 是否被更新为最大 seq
+    // Use a store with batch enabled, then verify /latest is updated to the max seq
     EtcdOpLogStore writer(cluster_id_,
                           /*enable_latest_seq_batch_update=*/true);
 
@@ -270,7 +271,7 @@ TEST_F(EtcdOpLogStoreTest, TestBatchUpdate_EnabledAndThreshold) {
         ASSERT_EQ(ErrorCode::OK, writer.WriteOpLog(e));
     }
 
-    // 等待一小段时间，让 batch 线程有机会刷新 `/latest`
+    // Wait a short period to give the batch thread a chance to flush `/latest`
     std::this_thread::sleep_for(std::chrono::milliseconds(2 * 1000));
 
     uint64_t latest = 0;
@@ -282,10 +283,10 @@ TEST_F(EtcdOpLogStoreTest, TestBatchUpdate_FailurePlaceholder) {
     GTEST_SKIP() << "Batch failure scenarios are better tested with a fault-injection etcd wrapper.";
 }
 
-// ========== 3.1.6 清理测试 ==========
+// ========== 3.1.6 Cleanup tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestCleanupOpLogBeforeAndBoundary) {
-    // 写入 seq 1..5
+    // Write seq 1..5
     for (uint64_t i = 1; i <= 5; ++i) {
         OpLogEntry e = MakeEntry(i, OpType::PUT_END,
                                  "cleanup_key_" + std::to_string(i),
@@ -293,7 +294,7 @@ TEST_F(EtcdOpLogStoreTest, TestCleanupOpLogBeforeAndBoundary) {
         ASSERT_EQ(ErrorCode::OK, store_->WriteOpLog(e));
     }
 
-    // 清理 seq < 3 => 1,2 应被删除，3,4,5 保留
+    // Cleanup seq < 3 => 1,2 should be deleted; 3,4,5 should remain
     ASSERT_EQ(ErrorCode::OK, store_->CleanupOpLogBefore(3));
 
     OpLogEntry out;
@@ -308,15 +309,15 @@ TEST_F(EtcdOpLogStoreTest, TestCleanupOpLogBeforeAndBoundary) {
 }
 
 TEST_F(EtcdOpLogStoreTest, TestCleanupOpLogBefore_Empty) {
-    // 空集群调用 Cleanup 应返回 OK
+    // Cleanup on an empty cluster should return OK
     CleanupTestData();
     EXPECT_EQ(ErrorCode::OK, store_->CleanupOpLogBefore(100));
 }
 
-// ========== 3.1.7 集群 ID 验证测试 ==========
+// ========== 3.1.7 Cluster ID validation tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestInvalidClusterId_Rejected) {
-    // 无效 cluster_id（包含斜杠）应触发 LOG(FATAL) 退出
+    // Invalid cluster_id (containing slashes) should trigger LOG(FATAL) and terminate
     EXPECT_DEATH(
         {
             EtcdOpLogStore bad_store("invalid/cluster", false);
@@ -326,24 +327,24 @@ TEST_F(EtcdOpLogStoreTest, TestInvalidClusterId_Rejected) {
 }
 
 TEST_F(EtcdOpLogStoreTest, TestClusterIdNormalization) {
-    // 尾部带多个斜杠会被规范化为去除斜杠的 cluster_id
+    // Trailing slashes should be normalized away from the cluster_id
     std::string raw_cluster = cluster_id_ + "///";
     EtcdOpLogStore normalized_store(raw_cluster, false);
 
     OpLogEntry e = MakeEntry(999, OpType::PUT_END, "norm-key", "norm-val");
     ASSERT_EQ(ErrorCode::OK, normalized_store.WriteOpLog(e));
 
-    // 通过当前 store_ 读取同一 seq，确认使用的是规范化后的 cluster_id
+    // Read the same seq via the current store_ to confirm the normalized cluster_id is used
     OpLogEntry out;
     ASSERT_EQ(ErrorCode::OK, store_->ReadOpLog(999, out));
     EXPECT_EQ("norm-key", out.object_key);
     EXPECT_EQ("norm-val", out.payload);
 }
 
-// ========== 3.1.8 分页测试 ==========
+// ========== 3.1.8 Pagination tests ==========
 
 TEST_F(EtcdOpLogStoreTest, TestReadOpLogSince_Pagination) {
-    // 写入 20 条，按 limit=7 分多页返回
+    // Write 20 entries and verify pagination via limit
     for (uint64_t i = 1; i <= 20; ++i) {
         OpLogEntry e = MakeEntry(i, OpType::PUT_END,
                                  "page_key_" + std::to_string(i),
@@ -360,7 +361,7 @@ TEST_F(EtcdOpLogStoreTest, TestReadOpLogSince_Pagination) {
 }
 
 TEST_F(EtcdOpLogStoreTest, TestReadOpLogSince_LargeDataset) {
-    // 写入较大数量的条目，验证 ReadOpLogSince 能正确返回前 N 条
+    // Write a larger number of entries to verify ReadOpLogSince returns the first N correctly
     const uint64_t total = 200;
     const uint64_t limit = 150;
     CleanupTestData();

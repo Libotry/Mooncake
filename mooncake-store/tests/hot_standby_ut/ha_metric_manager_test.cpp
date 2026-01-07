@@ -22,7 +22,7 @@ class HAMetricManagerTest : public ::testing::Test {
     HAMetricManager& M() { return HAMetricManager::instance(); }
 };
 
-// ========== 7.1.1 指标更新测试 ==========
+// ========== 7.1.1 Metric update tests ==========
 
 TEST_F(HAMetricManagerTest, TestSetOpLogLastSequenceId) {
     M().set_oplog_last_sequence_id(123);
@@ -95,7 +95,7 @@ TEST_F(HAMetricManagerTest, TestIncWatchDisconnectionsAndAppliedEntries) {
 }
 
 TEST_F(HAMetricManagerTest, TestRecordOpLogEtcdWriteLatency) {
-    // 调用 histogram 观测函数，主要验证不会崩溃
+    // Call histogram observe functions, mainly to ensure they do not crash
     M().observe_oplog_etcd_write_latency_us(100);
     M().observe_oplog_etcd_write_latency_us(5000);
     SUCCEED();
@@ -107,7 +107,7 @@ TEST_F(HAMetricManagerTest, TestRecordOpLogApplyLatency) {
     SUCCEED();
 }
 
-// ========== 7.1.2 指标序列化测试 ==========
+// ========== 7.1.2 Metric serialization tests ==========
 
 TEST_F(HAMetricManagerTest, TestSerializeMetrics) {
     M().set_oplog_last_sequence_id(1);
@@ -117,7 +117,7 @@ TEST_F(HAMetricManagerTest, TestSerializeMetrics) {
     std::string text = M().serialize_metrics();
     EXPECT_FALSE(text.empty());
 
-    // 基本字段应出现在 Prometheus 文本中
+    // Basic fields should appear in the Prometheus text output
     EXPECT_NE(std::string::npos, text.find("ha_oplog_last_sequence_id"));
     EXPECT_NE(std::string::npos, text.find("ha_oplog_applied_sequence_id"));
     EXPECT_NE(std::string::npos, text.find("ha_oplog_standby_lag"));
@@ -130,12 +130,12 @@ TEST_F(HAMetricManagerTest, TestGetSummaryString) {
 
     std::string summary = M().get_summary_string();
     EXPECT_FALSE(summary.empty());
-    // 摘要中应包含关键字段
+    // Summary string should contain key fields
     EXPECT_NE(std::string::npos, summary.find("last_seq"));
     EXPECT_NE(std::string::npos, summary.find("applied_seq"));
 }
 
-// ========== 7.1.3 单例测试 ==========
+// ========== 7.1.3 Singleton tests ==========
 
 TEST_F(HAMetricManagerTest, TestSingletonInstance) {
     HAMetricManager& a = HAMetricManager::instance();

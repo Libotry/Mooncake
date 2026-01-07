@@ -115,7 +115,7 @@ class OpLogWatcherTest : public ::testing::Test {
     std::unique_ptr<OpLogWatcher> watcher_;
 };
 
-// ========== 5.1.1 启动停止测试 ==========
+// ========== 5.1.1 Start/Stop tests ==========
 
 TEST_F(OpLogWatcherTest, TestStart) {
 #ifdef STORE_USE_ETCD
@@ -153,7 +153,7 @@ TEST_F(OpLogWatcherTest, TestStartWhenAlreadyRunning) {
 #endif
 }
 
-// ========== 5.1.2 Watch 事件处理测试 ==========
+// ========== 5.1.2 Watch event handling tests ==========
 
 TEST_F(OpLogWatcherTest, TestHandleWatchEvent_Put) {
 #ifdef STORE_USE_ETCD
@@ -201,7 +201,7 @@ TEST_F(OpLogWatcherTest, TestHandleWatchEvent_OutOfOrder) {
 #endif
 }
 
-// ========== 5.1.3 重连测试 ==========
+// ========== 5.1.3 Reconnection tests ==========
 
 TEST_F(OpLogWatcherTest, TestReconnectAfterDisconnect) {
 #ifdef STORE_USE_ETCD
@@ -237,7 +237,7 @@ TEST_F(OpLogWatcherTest, TestReconnectResumeFromLastSequence) {
 #endif
 }
 
-// ========== 5.1.4 校验和验证测试 ==========
+// ========== 5.1.4 Checksum verification tests ==========
 
 TEST_F(OpLogWatcherTest, TestHandleWatchEvent_ValidChecksum) {
 #ifdef STORE_USE_ETCD
@@ -276,7 +276,7 @@ TEST_F(OpLogWatcherTest, TestHandleWatchEvent_InvalidChecksum) {
 #endif
 }
 
-// ========== 5.1.5 大小验证测试 ==========
+// ========== 5.1.5 Size validation tests ==========
 
 TEST_F(OpLogWatcherTest, TestHandleWatchEvent_ValidSize) {
 #ifdef STORE_USE_ETCD
@@ -306,7 +306,7 @@ TEST_F(OpLogWatcherTest, TestHandleWatchEvent_InvalidSize) {
 #endif
 }
 
-// ========== 5.1.6 状态回调测试 ==========
+// ========== 5.1.6 State callback tests ==========
 
 TEST_F(OpLogWatcherTest, TestStateCallback_WatchHealthy) {
 #ifdef STORE_USE_ETCD
@@ -344,7 +344,7 @@ TEST_F(OpLogWatcherTest, TestStateCallback_WatchBroken) {
 #endif
 }
 
-// ========== 5.1.7 集群 ID 验证测试 ==========
+// ========== 5.1.7 Cluster ID validation tests ==========
 
 TEST_F(OpLogWatcherTest, TestInvalidClusterId_Rejected) {
     // Invalid cluster_id should cause LOG(FATAL) in constructor

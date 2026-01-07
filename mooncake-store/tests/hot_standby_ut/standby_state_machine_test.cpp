@@ -58,7 +58,7 @@ TEST_F(StandbyStateMachineTest, TestStartTransition) {
     EXPECT_EQ(StandbyState::STOPPED, result.old_state);
     EXPECT_EQ(StandbyState::CONNECTING, result.new_state);
     EXPECT_EQ(StandbyState::CONNECTING, machine_->GetState());
-    // CONNECTING 状态下还未真正开始同步，因此 IsRunning/IsConnected 都应为 false
+    // In CONNECTING state, syncing has not actually started yet, so IsRunning/IsConnected should both be false
     EXPECT_FALSE(machine_->IsRunning());
     EXPECT_FALSE(machine_->IsConnected());
 }
@@ -502,7 +502,7 @@ TEST_F(StandbyStateMachineTest, TestCallbackExceptionHandling) {
         callback_called = true;
     });
 
-    // Callback 被调用且不影响状态转换
+    // Callback should be invoked and must not interfere with state transitions
     auto result = machine_->ProcessEvent(StandbyEvent::START);
     EXPECT_TRUE(result.allowed);
     EXPECT_EQ(StandbyState::CONNECTING, machine_->GetState());
@@ -618,7 +618,7 @@ TEST_F(StandbyStateMachineTest, TestIsRunning) {
     EXPECT_FALSE(machine_->IsRunning());  // STOPPED
 
     machine_->ProcessEvent(StandbyEvent::START);
-    // CONNECTING 仅表示正在建立连接，还未开始同步，不视为 running
+    // CONNECTING only means establishing connection; sync has not started, so it is not considered "running"
     EXPECT_FALSE(machine_->IsRunning());  // CONNECTING
 
     machine_->ProcessEvent(StandbyEvent::CONNECTED);

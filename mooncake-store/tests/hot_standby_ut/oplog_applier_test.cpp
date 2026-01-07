@@ -117,7 +117,7 @@ class OpLogApplierTest : public ::testing::Test {
     std::string cluster_id_;
 };
 
-// ========== 4.1.1 基本应用测试 ==========
+// ========== 4.1.1 Basic apply tests ==========
 
 TEST_F(OpLogApplierTest, TestApplyPutEnd) {
     std::string payload = MakeValidJsonPayload();
@@ -166,7 +166,7 @@ TEST_F(OpLogApplierTest, TestApplyOpLogEntry_InvalidOpType) {
     EXPECT_TRUE(applier_->ApplyOpLogEntry(entry));
 }
 
-// ========== 4.1.2 序列号顺序测试 ==========
+// ========== 4.1.2 Sequence ordering tests ==========
 
 TEST_F(OpLogApplierTest, TestApplyInOrder) {
     std::string payload = MakeValidJsonPayload();
@@ -253,7 +253,7 @@ TEST_F(OpLogApplierTest, TestApplyDuplicateSequenceId) {
     EXPECT_FALSE(mock_metadata_store_->Exists("key1_dup"));
 }
 
-// ========== 4.1.3 Gap Resolution 测试 ==========
+// ========== 4.1.3 Gap resolution tests ==========
 
 TEST_F(OpLogApplierTest, TestRequestMissingOpLog_Success) {
 #ifdef STORE_USE_ETCD
@@ -295,7 +295,7 @@ TEST_F(OpLogApplierTest, TestGapResolution_Retry) {
 #endif
 }
 
-// ========== 4.1.4 校验和测试 ==========
+// ========== 4.1.4 Checksum tests ==========
 
 TEST_F(OpLogApplierTest, TestApplyOpLogEntry_ValidChecksum) {
     std::string payload = MakeValidJsonPayload();
@@ -329,7 +329,7 @@ TEST_F(OpLogApplierTest, TestChecksumFailureMetric) {
     // Metric increment is tested implicitly by the failure
 }
 
-// ========== 4.1.5 大小验证测试 ==========
+// ========== 4.1.5 Size validation tests ==========
 
 TEST_F(OpLogApplierTest, TestApplyOpLogEntry_ValidSize) {
     std::string payload = MakeValidJsonPayload();
@@ -362,7 +362,7 @@ TEST_F(OpLogApplierTest, TestApplyOpLogEntry_PayloadTooLarge) {
     EXPECT_EQ(1u, applier_->GetExpectedSequenceId());  // Should not advance
 }
 
-// ========== 4.1.6 恢复测试 ==========
+// ========== 4.1.6 Recovery tests ==========
 
 TEST_F(OpLogApplierTest, TestRecover) {
     // Set initial state: last applied sequence_id = 10
@@ -410,7 +410,7 @@ TEST_F(OpLogApplierTest, TestRecover_AfterGap) {
     // This tests that recovery resets the expected sequence
 }
 
-// ========== 4.1.7 待处理条目测试 ==========
+// ========== 4.1.7 Pending entries tests ==========
 
 TEST_F(OpLogApplierTest, TestProcessPendingEntries) {
     std::string payload = MakeValidJsonPayload();
@@ -503,7 +503,7 @@ TEST_F(OpLogApplierTest, TestPendingEntriesSkip) {
     EXPECT_FALSE(mock_metadata_store_->Exists("key4"));
 }
 
-// ========== 4.1.8 JSON 解析测试 ==========
+// ========== 4.1.8 JSON parsing tests ==========
 
 TEST_F(OpLogApplierTest, TestApplyPutEnd_ValidJson) {
     std::string payload = MakeValidJsonPayload(1, 2, 2048);
