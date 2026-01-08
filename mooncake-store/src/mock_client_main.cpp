@@ -31,9 +31,9 @@ DEFINE_int64(segment_size, 1024 * 1024 * 64,
              "Size of the segment to mount in bytes (default: 64MB)");
 DEFINE_int64(segment_base, 0x300000000,
              "Base address of the segment (virtual address, default: 0x300000000)");
-DEFINE_int32(ping_interval_sec, 30,
+DEFINE_int32(ping_interval_sec, 20,
              "Interval between ping operations in seconds (should be less than "
-             "master_service client_live_ttl_sec, default: 30)");
+             "master_service client_live_ttl_sec / 2, default: 20)");
 
 namespace mooncake {
 
