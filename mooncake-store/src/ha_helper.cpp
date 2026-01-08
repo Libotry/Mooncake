@@ -17,10 +17,10 @@ std::string ResolveClusterIdForMasterView(const std::string& cluster_id) {
     if (!cluster_id.empty()) {
         resolved = cluster_id;
     } else {
-        const char* cluster_id_env = std::getenv("MC_STORE_CLUSTER_ID");
-        if (cluster_id_env != nullptr && strlen(cluster_id_env) > 0) {
+    const char* cluster_id_env = std::getenv("MC_STORE_CLUSTER_ID");
+    if (cluster_id_env != nullptr && strlen(cluster_id_env) > 0) {
             resolved = std::string(cluster_id_env);
-        } else {
+    } else {
             resolved = DEFAULT_CLUSTER_ID;
         }
     }

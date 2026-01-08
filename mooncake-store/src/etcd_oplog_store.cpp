@@ -30,6 +30,43 @@ EtcdOpLogStore::EtcdOpLogStore(const std::string& cluster_id,
                    << "'. Allowed chars: [A-Za-z0-9_.-], max_len=128, no slashes.";
     }
 
+    // Initialize /latest key to 0 if it doesn't exist (first startup).
+    // This avoids "key not found" errors when querying the latest sequence ID.
+    // Important: Only initialize if the key doesn't exist to avoid overwriting existing data.
+    if (!cluster_id_.empty()) {
+        std::string latest_key = BuildLatestKey();
+        std::string existing_value;
+        EtcdRevisionId revision_id;
+        ErrorCode get_err = EtcdHelper::Get(latest_key.c_str(), latest_key.size(),
+                                            existing_value, revision_id);
+        if (get_err == ErrorCode::ETCD_KEY_NOT_EXIST) {
+            // Key doesn't exist, safe to initialize to 0
+            std::string initial_value = "0";
+            ErrorCode create_err = EtcdHelper::Create(latest_key.c_str(), latest_key.size(),
+                                                      initial_value.c_str(), initial_value.size());
+            if (create_err == ErrorCode::OK) {
+                LOG(INFO) << "Initialized /latest key to 0 for cluster_id=" << cluster_id_;
+            } else if (create_err == ErrorCode::ETCD_TRANSACTION_FAIL) {
+                // Race condition: another instance created it between Get and Create
+                LOG(INFO) << "/latest key was created by another instance for cluster_id="
+                          << cluster_id_;
+            } else {
+                // Other errors (e.g., etcd not connected) are logged but don't fail construction
+                // The key will be created when the first OpLog entry is written
+                LOG(WARNING) << "Failed to initialize /latest key (error=" << create_err
+                            << "), will be created on first OpLog write";
+            }
+        } else if (get_err == ErrorCode::OK) {
+            // Key already exists, do nothing - preserve existing value
+            LOG(INFO) << "/latest key already exists (value=" << existing_value
+                      << ") for cluster_id=" << cluster_id_;
+        } else {
+            // Other errors (e.g., etcd not connected) are logged but don't fail construction
+            LOG(WARNING) << "Failed to check /latest key existence (error=" << get_err
+                        << "), will be created on first OpLog write";
+        }
+    }
+
     // Start batch update thread only for writers.
     if (enable_latest_seq_batch_update_) {
         batch_update_running_.store(true);
