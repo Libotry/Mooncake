@@ -106,7 +106,21 @@ target_link_options(mooncake_master PRIVATE -Os -s)
 # Client server binary
 add_executable(mooncake_client real_client_main.cpp)
 target_link_libraries(mooncake_client PRIVATE mooncake_store)
-target_compile_options(mooncake_master PRIVATE -Os)
+target_compile_options(mooncake_client PRIVATE -Os)
 target_link_options(mooncake_client PRIVATE -Os -s)
 
-install(TARGETS mooncake_master mooncake_client DESTINATION bin)
+# Mock client simulator binary
+add_executable(mock_client mock_client_main.cpp)
+target_link_libraries(mock_client PRIVATE
+    mooncake_store
+    cachelib_memory_allocator
+    glog::glog
+    gflags::gflags
+    pthread
+)
+if (STORE_USE_ETCD)
+    add_dependencies(mock_client build_etcd_wrapper)
+    target_link_libraries(mock_client PRIVATE ${ETCD_WRAPPER_LIB})
+endif()
+
+install(TARGETS mooncake_master mooncake_client mock_client DESTINATION bin)
