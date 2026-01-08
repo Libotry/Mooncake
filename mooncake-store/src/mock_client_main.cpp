@@ -128,23 +128,26 @@ class MockClientSimulator {
         LOG(INFO) << "=== Starting mock client simulation ===";
         LOG(INFO) << "Press Ctrl+C to stop";
 
-        // Start ping thread to keep connection alive
-        // Note: We already sent an initial ping after mounting the segment,
-        // so the first periodic ping will be sent after ping_interval_sec
+        // Start ping thread IMMEDIATELY to keep connection alive
+        // This is critical: if Run() is called with delay after constructor,
+        // the client may expire before ping thread starts
         std::thread ping_thread([this]() {
             LOG(INFO) << "[Ping] Starting ping thread (interval="
                       << FLAGS_ping_interval_sec << "s)";
-            // Send first ping immediately to ensure client is registered
-            // (in case the initial ping after mount was missed or delayed)
-            LOG(INFO) << "[Ping] Sending first periodic ping immediately...";
+            
+            // Send first ping IMMEDIATELY (no sleep) to ensure client is registered
+            // This compensates for any delay between constructor and Run() call
+            LOG(INFO) << "[Ping] Sending immediate ping to register client...";
             auto first_ping_result = client_.Ping();
             if (first_ping_result.has_value()) {
-                LOG(INFO) << "[Ping] First periodic ping SUCCESS";
+                LOG(INFO) << "[Ping] Immediate ping SUCCESS - client registered";
             } else {
-                LOG(WARNING) << "[Ping] First periodic ping FAILED: error="
-                             << static_cast<int>(first_ping_result.error());
+                LOG(WARNING) << "[Ping] Immediate ping FAILED: error="
+                             << static_cast<int>(first_ping_result.error())
+                             << " (client may expire if this persists)";
             }
             
+            // Now start periodic pings
             while (running_.load()) {
                 std::this_thread::sleep_for(
                     std::chrono::seconds(FLAGS_ping_interval_sec));
