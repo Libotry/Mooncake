@@ -103,6 +103,26 @@ class MasterService {
      */
     auto GetAllKeys() -> tl::expected<std::vector<std::string>, ErrorCode>;
 
+    /**
+     * @brief Metadata information for a single key
+     */
+    struct KeyMetadataInfo {
+        std::string key;
+        UUID client_id;
+        uint64_t size;
+        size_t replica_count;
+        std::chrono::steady_clock::time_point put_start_time;
+        std::chrono::steady_clock::time_point lease_timeout;
+        std::optional<std::chrono::steady_clock::time_point> soft_pin_timeout;
+        std::vector<Replica::Descriptor> replicas;
+    };
+
+    /**
+     * @brief Fetch all metadata information for all keys
+     * @return Vector of KeyMetadataInfo for all keys
+     */
+    auto GetAllMetadata() -> tl::expected<std::vector<KeyMetadataInfo>, ErrorCode>;
+
     // Restore metadata from a Standby snapshot (fast failover).
     // NOTE: This is used only on the node that was running HotStandbyService
     // right before it was promoted to leader.
