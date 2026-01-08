@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <random>
 #include <thread>
+#include <unordered_set>
 
 #include "master_client.h"
 #include "replica.h"
@@ -97,6 +98,17 @@ class MockClientSimulator {
             if (mount_result.has_value()) {
                 LOG(INFO) << "[Mount] Segment mounted successfully";
                 mounted_segment_ = segment;
+
+                // Immediately send a ping after mounting to register the client
+                LOG(INFO) << "[Mount] Sending initial ping to register client...";
+                auto ping_result = client_.Ping();
+                if (ping_result.has_value()) {
+                    LOG(INFO) << "[Mount] Initial ping SUCCESS - client registered";
+                } else {
+                    LOG(WARNING) << "[Mount] Initial ping FAILED: error="
+                                 << static_cast<int>(ping_result.error())
+                                 << " (this may cause segment to be unmounted)";
+                }
             } else {
                 LOG(WARNING) << "[Mount] Failed to mount segment: error="
                              << static_cast<int>(mount_result.error());
@@ -117,6 +129,8 @@ class MockClientSimulator {
         LOG(INFO) << "Press Ctrl+C to stop";
 
         // Start ping thread to keep connection alive
+        // Note: First ping will be sent after ping_interval_sec, but we already
+        // sent an initial ping after mounting the segment
         std::thread ping_thread([this]() {
             LOG(INFO) << "[Ping] Starting ping thread (interval="
                       << FLAGS_ping_interval_sec << "s)";
@@ -126,13 +140,14 @@ class MockClientSimulator {
                 if (!running_.load()) {
                     break;
                 }
-                LOG(INFO) << "[Ping] Sending ping to master_service...";
+                LOG(INFO) << "[Ping] Sending periodic ping to master_service...";
                 auto ping_result = client_.Ping();
                 if (ping_result.has_value()) {
-                    LOG(INFO) << "[Ping] Ping SUCCESS";
+                    LOG(INFO) << "[Ping] Ping SUCCESS - connection kept alive";
                 } else {
                     LOG(WARNING) << "[Ping] Ping FAILED: error="
-                                 << static_cast<int>(ping_result.error());
+                                 << static_cast<int>(ping_result.error())
+                                 << " (segment may be unmounted if this persists)";
                 }
             }
             LOG(INFO) << "[Ping] Ping thread stopped";
@@ -140,16 +155,21 @@ class MockClientSimulator {
 
         int success_count = 0;
         int failure_count = 0;
+        int new_key_count = 0;      // Count of successfully created new keys
+        int update_count = 0;        // Count of successfully updated existing keys
         int delete_count = 0;
         int delete_success_count = 0;
         int delete_failure_count = 0;
         auto start_time = std::chrono::steady_clock::now();
         const int stats_interval = 50;  // Print stats every N operations
 
+        // Track unique keys that have been successfully written
+        std::unordered_set<std::string> written_keys;
+
         while (running_.load()) {
             int current_write_count = write_count_.load();
             LOG(INFO) << "--- Operation #" << (current_write_count + 1)
-                      << " ---";
+                      << " (unique keys written: " << written_keys.size() << ") ---";
 
             // Determine which key to use
             std::string key;
@@ -219,10 +239,14 @@ class MockClientSimulator {
                     client_.PutEnd(key, ReplicaType::MEMORY);
                 if (put_end_result.has_value()) {
                     success_count++;
+                    new_key_count++;
                     write_count_++;
+                    written_keys.insert(key);
                     LOG(INFO) << "[PUT] PutEnd SUCCESS: key=" << key
                               << " (new key created)";
-                    LOG(INFO) << "[PUT] Operation COMPLETE: key=" << key;
+                    LOG(INFO) << "[PUT] Operation COMPLETE: key=" << key
+                              << " (total unique keys: " << written_keys.size()
+                              << ", new keys: " << new_key_count << ")";
                 } else {
                     failure_count++;
                     write_count_++;
@@ -231,6 +255,8 @@ class MockClientSimulator {
                                << static_cast<int>(put_end_result.error());
                     LOG(ERROR) << "[PUT] Operation INCOMPLETE: key=" << key
                                << " (PutStart succeeded but PutEnd failed)";
+                    LOG(ERROR) << "[PUT] This may indicate segment is full or "
+                                  "other resource issue";
                 }
             } else {
                 // Key exists, simulate PUT (update) operation
@@ -251,6 +277,9 @@ class MockClientSimulator {
                                      << key
                                      << ", error=NO_AVAILABLE_HANDLE (-200) "
                                      << "(master_service may not have segments configured or is out of space)";
+                        LOG(WARNING) << "[PUT] Current unique keys written: "
+                                     << written_keys.size()
+                                     << ", this may indicate segment is full";
                     } else {
                         LOG(ERROR) << "[PUT] PutStart (update) FAILED: key="
                                    << key << ", error="
@@ -270,10 +299,14 @@ class MockClientSimulator {
                     client_.PutEnd(key, ReplicaType::MEMORY);
                 if (put_end_result.has_value()) {
                     success_count++;
+                    update_count++;
                     write_count_++;
+                    // Note: We don't add to written_keys for updates, only for new keys
                     LOG(INFO) << "[PUT] PutEnd (update) SUCCESS: key=" << key;
                     LOG(INFO) << "[PUT] Operation COMPLETE: key=" << key
-                              << " (key updated)";
+                              << " (key updated, total unique keys: "
+                              << written_keys.size() << ", updates: " << update_count
+                              << ")";
                 } else {
                     failure_count++;
                     write_count_++;
@@ -282,6 +315,8 @@ class MockClientSimulator {
                                << static_cast<int>(put_end_result.error());
                     LOG(ERROR) << "[PUT] Operation INCOMPLETE: key=" << key
                                << " (PutStart succeeded but PutEnd failed)";
+                    LOG(ERROR) << "[PUT] This may indicate segment is full or "
+                                  "other resource issue";
                 }
             }
 
@@ -352,7 +387,10 @@ class MockClientSimulator {
                 LOG(INFO) << "  Total operations: " << total_ops;
                 LOG(INFO) << "  Successful: " << success_count
                           << " (" << success_rate << "%)";
+                LOG(INFO) << "    - New keys created: " << new_key_count;
+                LOG(INFO) << "    - Keys updated: " << update_count;
                 LOG(INFO) << "  Failed: " << failure_count;
+                LOG(INFO) << "  Unique keys written: " << written_keys.size();
                 LOG(INFO) << "  Delete operations: " << delete_count
                           << " (success: " << delete_success_count
                           << ", failed: " << delete_failure_count << ")";
@@ -382,7 +420,10 @@ class MockClientSimulator {
         LOG(INFO) << "  Total operations: " << total_ops;
         LOG(INFO) << "  Successful: " << success_count << " ("
                   << final_success_rate << "%)";
+        LOG(INFO) << "    - New keys created: " << new_key_count;
+        LOG(INFO) << "    - Keys updated: " << update_count;
         LOG(INFO) << "  Failed: " << failure_count;
+        LOG(INFO) << "  Unique keys written: " << written_keys.size();
         LOG(INFO) << "  Delete operations: " << delete_count
                   << " (success: " << delete_success_count
                   << ", failed: " << delete_failure_count << ")";
