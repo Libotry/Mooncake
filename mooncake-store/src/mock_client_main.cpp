@@ -64,9 +64,22 @@ class MockClientSimulator {
     }
 
     void Run() {
-        LOG(INFO) << "Starting mock client simulation...";
+        LOG(INFO) << "=== Starting mock client simulation ===";
+        LOG(INFO) << "Press Ctrl+C to stop";
+
+        int success_count = 0;
+        int failure_count = 0;
+        int delete_count = 0;
+        int delete_success_count = 0;
+        int delete_failure_count = 0;
+        auto start_time = std::chrono::steady_clock::now();
+        const int stats_interval = 50;  // Print stats every N operations
 
         while (running_.load()) {
+            int current_write_count = write_count_.load();
+            LOG(INFO) << "--- Operation #" << (current_write_count + 1)
+                      << " ---";
+
             // Determine which key to use
             std::string key;
 
@@ -74,39 +87,50 @@ class MockClientSimulator {
                 write_count_ > 0) {
                 // Every 100 writes, use a new key (beyond max_keys limit)
                 key = GenerateKey(0, true);
-                LOG(INFO) << "Using new key (every 100 writes): " << key;
+                LOG(INFO) << "[Key Selection] Using new key (every 100 writes): "
+                          << key;
             } else {
                 // Use one of the max_keys keys
                 key_index_ = (key_index_ + 1) % FLAGS_max_keys;
                 key = GenerateKey(key_index_);
+                LOG(INFO) << "[Key Selection] Using key from pool: " << key
+                          << " (index=" << key_index_.load() << ")";
             }
 
             // Simulate GET operation: check if key exists
+            LOG(INFO) << "[GET] Checking if key exists: " << key;
             auto exist_result = client_.ExistKey(key);
             bool exists = false;
             if (exist_result.has_value()) {
                 exists = exist_result.value();
+                LOG(INFO) << "[GET] Key " << key
+                          << (exists ? " EXISTS" : " does NOT exist");
             } else {
-                LOG(WARNING) << "ExistKey failed for key=" << key
+                LOG(WARNING) << "[GET] ExistKey failed for key=" << key
                              << ", error="
                              << static_cast<int>(exist_result.error());
             }
 
             if (!exists) {
                 // Key doesn't exist, simulate PUT operation
+                LOG(INFO) << "[PUT] Starting PUT operation for new key: " << key
+                          << ", value_size=" << FLAGS_value_size;
+
                 // Step 1: PutStart
                 std::vector<size_t> slice_lengths = {
                     static_cast<size_t>(FLAGS_value_size)};
+                LOG(INFO) << "[PUT] Step 1/2: Calling PutStart...";
                 auto put_start_result =
                     client_.PutStart(key, slice_lengths, config_);
                 if (!put_start_result.has_value()) {
                     ErrorCode err = put_start_result.error();
+                    failure_count++;
                     if (err == ErrorCode::NO_AVAILABLE_HANDLE) {
-                        LOG(WARNING) << "PutStart failed: key=" << key
+                        LOG(WARNING) << "[PUT] PutStart FAILED: key=" << key
                                      << ", error=NO_AVAILABLE_HANDLE (-200) "
                                      << "(master_service may not have segments configured or is out of space)";
                     } else {
-                        LOG(ERROR) << "PutStart failed: key=" << key
+                        LOG(ERROR) << "[PUT] PutStart FAILED: key=" << key
                                    << ", error=" << static_cast<int>(err);
                     }
                     write_count_++;
@@ -115,34 +139,51 @@ class MockClientSimulator {
                     continue;
                 }
 
+                LOG(INFO) << "[PUT] PutStart SUCCESS: key=" << key
+                          << ", replicas=" << put_start_result.value().size();
+
                 // Step 2: PutEnd (complete the put operation)
+                LOG(INFO) << "[PUT] Step 2/2: Calling PutEnd...";
                 auto put_end_result =
                     client_.PutEnd(key, ReplicaType::MEMORY);
                 if (put_end_result.has_value()) {
-                    LOG(INFO) << "PUT: key=" << key << " (new)";
+                    success_count++;
                     write_count_++;
+                    LOG(INFO) << "[PUT] PutEnd SUCCESS: key=" << key
+                              << " (new key created)";
+                    LOG(INFO) << "[PUT] Operation COMPLETE: key=" << key;
                 } else {
-                    LOG(ERROR) << "PutEnd failed: key=" << key
+                    failure_count++;
+                    write_count_++;
+                    LOG(ERROR) << "[PUT] PutEnd FAILED: key=" << key
                                << ", error="
                                << static_cast<int>(put_end_result.error());
-                    write_count_++;
+                    LOG(ERROR) << "[PUT] Operation INCOMPLETE: key=" << key
+                               << " (PutStart succeeded but PutEnd failed)";
                 }
             } else {
                 // Key exists, simulate PUT (update) operation
+                LOG(INFO) << "[PUT] Starting PUT operation for existing key: "
+                          << key << ", value_size=" << FLAGS_value_size;
+
                 // For update, we also use PutStart + PutEnd
                 std::vector<size_t> slice_lengths = {
                     static_cast<size_t>(FLAGS_value_size)};
+                LOG(INFO) << "[PUT] Step 1/2: Calling PutStart (update)...";
                 auto put_start_result =
                     client_.PutStart(key, slice_lengths, config_);
                 if (!put_start_result.has_value()) {
                     ErrorCode err = put_start_result.error();
+                    failure_count++;
                     if (err == ErrorCode::NO_AVAILABLE_HANDLE) {
-                        LOG(WARNING) << "PutStart (update) failed: key=" << key
+                        LOG(WARNING) << "[PUT] PutStart (update) FAILED: key="
+                                     << key
                                      << ", error=NO_AVAILABLE_HANDLE (-200) "
                                      << "(master_service may not have segments configured or is out of space)";
                     } else {
-                        LOG(ERROR) << "PutStart (update) failed: key=" << key
-                                   << ", error=" << static_cast<int>(err);
+                        LOG(ERROR) << "[PUT] PutStart (update) FAILED: key="
+                                   << key << ", error="
+                                   << static_cast<int>(err);
                     }
                     write_count_++;
                     std::this_thread::sleep_for(
@@ -150,16 +191,26 @@ class MockClientSimulator {
                     continue;
                 }
 
+                LOG(INFO) << "[PUT] PutStart (update) SUCCESS: key=" << key
+                          << ", replicas=" << put_start_result.value().size();
+
+                LOG(INFO) << "[PUT] Step 2/2: Calling PutEnd (update)...";
                 auto put_end_result =
                     client_.PutEnd(key, ReplicaType::MEMORY);
                 if (put_end_result.has_value()) {
-                    LOG(INFO) << "PUT (update): key=" << key;
+                    success_count++;
                     write_count_++;
+                    LOG(INFO) << "[PUT] PutEnd (update) SUCCESS: key=" << key;
+                    LOG(INFO) << "[PUT] Operation COMPLETE: key=" << key
+                              << " (key updated)";
                 } else {
-                    LOG(ERROR) << "PutEnd (update) failed: key=" << key
+                    failure_count++;
+                    write_count_++;
+                    LOG(ERROR) << "[PUT] PutEnd (update) FAILED: key=" << key
                                << ", error="
                                << static_cast<int>(put_end_result.error());
-                    write_count_++;
+                    LOG(ERROR) << "[PUT] Operation INCOMPLETE: key=" << key
+                               << " (PutStart succeeded but PutEnd failed)";
                 }
             }
 
@@ -167,23 +218,77 @@ class MockClientSimulator {
             if (FLAGS_delete_interval > 0 &&
                 write_count_ % FLAGS_delete_interval == 0 &&
                 write_count_ > 0) {
+                delete_count++;
                 // Delete one of the existing keys (not new keys)
                 int delete_key_index = (key_index_ + 1) % FLAGS_max_keys;
                 std::string delete_key = GenerateKey(delete_key_index);
+                LOG(INFO) << "[DELETE] Attempting to delete key: " << delete_key
+                          << " (delete operation #" << delete_count << ")";
                 auto remove_result = client_.Remove(delete_key);
                 if (remove_result.has_value()) {
-                    LOG(INFO) << "DELETE: key=" << delete_key;
+                    delete_success_count++;
+                    LOG(INFO) << "[DELETE] SUCCESS: key=" << delete_key
+                              << " deleted";
                 } else {
-                    LOG(ERROR) << "DELETE failed: key=" << delete_key
+                    delete_failure_count++;
+                    LOG(ERROR) << "[DELETE] FAILED: key=" << delete_key
                                << ", error="
                                << static_cast<int>(remove_result.error());
                 }
             }
 
+            // Print statistics periodically
+            int total_ops = success_count + failure_count;
+            if (total_ops > 0 && total_ops % stats_interval == 0) {
+                auto current_time = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    current_time - start_time).count();
+                double success_rate =
+                    (total_ops > 0) ? (100.0 * success_count / total_ops) : 0.0;
+                double ops_per_sec = (elapsed > 0) ? (total_ops / elapsed) : 0.0;
+
+                LOG(INFO) << "=== Statistics (last " << stats_interval
+                          << " operations) ===";
+                LOG(INFO) << "  Total operations: " << total_ops;
+                LOG(INFO) << "  Successful: " << success_count
+                          << " (" << success_rate << "%)";
+                LOG(INFO) << "  Failed: " << failure_count;
+                LOG(INFO) << "  Delete operations: " << delete_count
+                          << " (success: " << delete_success_count
+                          << ", failed: " << delete_failure_count << ")";
+                LOG(INFO) << "  Elapsed time: " << elapsed << " seconds";
+                LOG(INFO) << "  Operations/sec: " << ops_per_sec;
+                LOG(INFO) << "========================================";
+            }
+
             // Sleep for the specified interval
+            LOG(INFO) << "[Sleep] Waiting " << FLAGS_write_interval_ms
+                      << " ms before next operation...";
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(FLAGS_write_interval_ms));
         }
+
+        // Print final statistics
+        auto end_time = std::chrono::steady_clock::now();
+        auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            end_time - start_time).count();
+        int total_ops = success_count + failure_count;
+        double final_success_rate =
+            (total_ops > 0) ? (100.0 * success_count / total_ops) : 0.0;
+        double final_ops_per_sec =
+            (total_elapsed > 0) ? (total_ops / total_elapsed) : 0.0;
+
+        LOG(INFO) << "=== Final Statistics ===";
+        LOG(INFO) << "  Total operations: " << total_ops;
+        LOG(INFO) << "  Successful: " << success_count << " ("
+                  << final_success_rate << "%)";
+        LOG(INFO) << "  Failed: " << failure_count;
+        LOG(INFO) << "  Delete operations: " << delete_count
+                  << " (success: " << delete_success_count
+                  << ", failed: " << delete_failure_count << ")";
+        LOG(INFO) << "  Total elapsed time: " << total_elapsed << " seconds";
+        LOG(INFO) << "  Average operations/sec: " << final_ops_per_sec;
+        LOG(INFO) << "=========================";
     }
 
     void Stop() { running_.store(false); }
