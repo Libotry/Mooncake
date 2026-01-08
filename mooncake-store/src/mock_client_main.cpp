@@ -129,11 +129,22 @@ class MockClientSimulator {
         LOG(INFO) << "Press Ctrl+C to stop";
 
         // Start ping thread to keep connection alive
-        // Note: First ping will be sent after ping_interval_sec, but we already
-        // sent an initial ping after mounting the segment
+        // Note: We already sent an initial ping after mounting the segment,
+        // so the first periodic ping will be sent after ping_interval_sec
         std::thread ping_thread([this]() {
             LOG(INFO) << "[Ping] Starting ping thread (interval="
                       << FLAGS_ping_interval_sec << "s)";
+            // Send first ping immediately to ensure client is registered
+            // (in case the initial ping after mount was missed or delayed)
+            LOG(INFO) << "[Ping] Sending first periodic ping immediately...";
+            auto first_ping_result = client_.Ping();
+            if (first_ping_result.has_value()) {
+                LOG(INFO) << "[Ping] First periodic ping SUCCESS";
+            } else {
+                LOG(WARNING) << "[Ping] First periodic ping FAILED: error="
+                             << static_cast<int>(first_ping_result.error());
+            }
+            
             while (running_.load()) {
                 std::this_thread::sleep_for(
                     std::chrono::seconds(FLAGS_ping_interval_sec));
