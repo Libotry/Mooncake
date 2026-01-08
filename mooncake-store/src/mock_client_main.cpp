@@ -10,6 +10,7 @@
 
 #include "master_client.h"
 #include "replica.h"
+#include "segment.h"
 #include "types.h"
 
 DEFINE_string(master_address, "127.0.0.1:50051",
@@ -21,6 +22,14 @@ DEFINE_int32(delete_interval, 10,
 DEFINE_bool(enable_new_keys, true,
             "Allow new keys every 100 writes (beyond the max_keys limit)");
 DEFINE_int32(value_size, 1024, "Size of value (kvcache) in bytes");
+DEFINE_bool(mount_segment, true,
+            "Mount a segment to master_service before starting operations");
+DEFINE_string(segment_name, "mock_client_segment",
+              "Name of the segment to mount");
+DEFINE_int64(segment_size, 1024 * 1024 * 64,
+             "Size of the segment to mount in bytes (default: 64MB)");
+DEFINE_int64(segment_base, 0x300000000,
+             "Base address of the segment (virtual address, default: 0x300000000)");
 
 namespace mooncake {
 
@@ -61,6 +70,42 @@ class MockClientSimulator {
         LOG(INFO) << "  write_interval_ms: " << FLAGS_write_interval_ms;
         LOG(INFO) << "  delete_interval: " << FLAGS_delete_interval;
         LOG(INFO) << "  value_size: " << FLAGS_value_size;
+        LOG(INFO) << "  mount_segment: " << FLAGS_mount_segment;
+
+        // Mount segment if enabled
+        if (FLAGS_mount_segment) {
+            Segment segment;
+            segment.id = generate_uuid();
+            segment.name = FLAGS_segment_name;
+            segment.base = static_cast<uintptr_t>(FLAGS_segment_base);
+            segment.size = static_cast<size_t>(FLAGS_segment_size);
+            segment.te_endpoint = FLAGS_segment_name;
+
+            LOG(INFO) << "[Mount] Attempting to mount segment:";
+            LOG(INFO) << "  name: " << segment.name;
+            LOG(INFO) << "  id: " << segment.id;
+            LOG(INFO) << "  base: 0x" << std::hex << segment.base << std::dec;
+            LOG(INFO) << "  size: " << segment.size << " bytes ("
+                      << (segment.size / (1024 * 1024)) << " MB)";
+            LOG(INFO) << "  te_endpoint: " << segment.te_endpoint;
+
+            auto mount_result = client_.MountSegment(segment);
+            if (mount_result.has_value()) {
+                LOG(INFO) << "[Mount] Segment mounted successfully";
+                mounted_segment_ = segment;
+            } else {
+                LOG(WARNING) << "[Mount] Failed to mount segment: error="
+                             << static_cast<int>(mount_result.error());
+                LOG(WARNING) << "[Mount] PutStart operations may fail with "
+                                "NO_AVAILABLE_HANDLE error";
+                LOG(WARNING) << "[Mount] You may need to start mooncake_client "
+                                "to provide real storage";
+            }
+        } else {
+            LOG(INFO) << "[Mount] Segment mounting disabled (--nomount_segment)";
+            LOG(INFO) << "[Mount] PutStart operations may fail if no segment is "
+                         "available";
+        }
     }
 
     void Run() {
@@ -298,6 +343,7 @@ class MockClientSimulator {
     UUID client_id_;
     MasterClient client_;
     ReplicateConfig config_;
+    Segment mounted_segment_;
     std::atomic<int> write_count_;
     std::atomic<int> key_index_;
     std::atomic<bool> running_;
