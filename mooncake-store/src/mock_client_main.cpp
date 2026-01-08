@@ -69,12 +69,10 @@ class MockClientSimulator {
         while (running_.load()) {
             // Determine which key to use
             std::string key;
-            bool is_new_key = false;
 
             if (FLAGS_enable_new_keys && write_count_ % 100 == 0 &&
                 write_count_ > 0) {
                 // Every 100 writes, use a new key (beyond max_keys limit)
-                is_new_key = true;
                 key = GenerateKey(0, true);
                 LOG(INFO) << "Using new key (every 100 writes): " << key;
             } else {
