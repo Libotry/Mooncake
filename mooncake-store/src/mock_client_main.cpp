@@ -100,9 +100,15 @@ class MockClientSimulator {
                 auto put_start_result =
                     client_.PutStart(key, slice_lengths, config_);
                 if (!put_start_result.has_value()) {
-                    LOG(ERROR) << "PutStart failed: key=" << key
-                               << ", error="
-                               << static_cast<int>(put_start_result.error());
+                    ErrorCode err = put_start_result.error();
+                    if (err == ErrorCode::NO_AVAILABLE_HANDLE) {
+                        LOG(WARNING) << "PutStart failed: key=" << key
+                                     << ", error=NO_AVAILABLE_HANDLE (-200) "
+                                     << "(master_service may not have segments configured or is out of space)";
+                    } else {
+                        LOG(ERROR) << "PutStart failed: key=" << key
+                                   << ", error=" << static_cast<int>(err);
+                    }
                     write_count_++;
                     std::this_thread::sleep_for(
                         std::chrono::milliseconds(FLAGS_write_interval_ms));
@@ -129,9 +135,15 @@ class MockClientSimulator {
                 auto put_start_result =
                     client_.PutStart(key, slice_lengths, config_);
                 if (!put_start_result.has_value()) {
-                    LOG(ERROR) << "PutStart (update) failed: key=" << key
-                               << ", error="
-                               << static_cast<int>(put_start_result.error());
+                    ErrorCode err = put_start_result.error();
+                    if (err == ErrorCode::NO_AVAILABLE_HANDLE) {
+                        LOG(WARNING) << "PutStart (update) failed: key=" << key
+                                     << ", error=NO_AVAILABLE_HANDLE (-200) "
+                                     << "(master_service may not have segments configured or is out of space)";
+                    } else {
+                        LOG(ERROR) << "PutStart (update) failed: key=" << key
+                                   << ", error=" << static_cast<int>(err);
+                    }
                     write_count_++;
                     std::this_thread::sleep_for(
                         std::chrono::milliseconds(FLAGS_write_interval_ms));
