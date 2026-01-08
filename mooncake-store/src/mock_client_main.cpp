@@ -30,6 +30,9 @@ DEFINE_int64(segment_size, 1024 * 1024 * 64,
              "Size of the segment to mount in bytes (default: 64MB)");
 DEFINE_int64(segment_base, 0x300000000,
              "Base address of the segment (virtual address, default: 0x300000000)");
+DEFINE_int32(ping_interval_sec, 30,
+             "Interval between ping operations in seconds (should be less than "
+             "master_service client_live_ttl_sec, default: 30)");
 
 namespace mooncake {
 
@@ -71,6 +74,7 @@ class MockClientSimulator {
         LOG(INFO) << "  delete_interval: " << FLAGS_delete_interval;
         LOG(INFO) << "  value_size: " << FLAGS_value_size;
         LOG(INFO) << "  mount_segment: " << FLAGS_mount_segment;
+        LOG(INFO) << "  ping_interval_sec: " << FLAGS_ping_interval_sec;
 
         // Mount segment if enabled
         if (FLAGS_mount_segment) {
@@ -111,6 +115,28 @@ class MockClientSimulator {
     void Run() {
         LOG(INFO) << "=== Starting mock client simulation ===";
         LOG(INFO) << "Press Ctrl+C to stop";
+
+        // Start ping thread to keep connection alive
+        std::thread ping_thread([this]() {
+            LOG(INFO) << "[Ping] Starting ping thread (interval="
+                      << FLAGS_ping_interval_sec << "s)";
+            while (running_.load()) {
+                std::this_thread::sleep_for(
+                    std::chrono::seconds(FLAGS_ping_interval_sec));
+                if (!running_.load()) {
+                    break;
+                }
+                LOG(INFO) << "[Ping] Sending ping to master_service...";
+                auto ping_result = client_.Ping();
+                if (ping_result.has_value()) {
+                    LOG(INFO) << "[Ping] Ping SUCCESS";
+                } else {
+                    LOG(WARNING) << "[Ping] Ping FAILED: error="
+                                 << static_cast<int>(ping_result.error());
+                }
+            }
+            LOG(INFO) << "[Ping] Ping thread stopped";
+        });
 
         int success_count = 0;
         int failure_count = 0;
@@ -269,6 +295,29 @@ class MockClientSimulator {
                 std::string delete_key = GenerateKey(delete_key_index);
                 LOG(INFO) << "[DELETE] Attempting to delete key: " << delete_key
                           << " (delete operation #" << delete_count << ")";
+
+                // First check if the key exists
+                auto exist_result = client_.ExistKey(delete_key);
+                bool key_exists = false;
+                if (exist_result.has_value()) {
+                    key_exists = exist_result.value();
+                    LOG(INFO) << "[DELETE] Key " << delete_key
+                              << (key_exists ? " EXISTS" : " does NOT exist");
+                } else {
+                    LOG(WARNING) << "[DELETE] Failed to check key existence: "
+                                 << delete_key
+                                 << ", error="
+                                 << static_cast<int>(exist_result.error());
+                }
+
+                if (!key_exists) {
+                    LOG(INFO) << "[DELETE] Skipping delete: key=" << delete_key
+                              << " does not exist (this is normal if the key "
+                                 "hasn't been written yet or was already deleted)";
+                    continue;
+                }
+
+                // Key exists, proceed with deletion
                 auto remove_result = client_.Remove(delete_key);
                 if (remove_result.has_value()) {
                     delete_success_count++;
@@ -276,9 +325,15 @@ class MockClientSimulator {
                               << " deleted";
                 } else {
                     delete_failure_count++;
-                    LOG(ERROR) << "[DELETE] FAILED: key=" << delete_key
-                               << ", error="
-                               << static_cast<int>(remove_result.error());
+                    ErrorCode err = remove_result.error();
+                    if (err == ErrorCode::OBJECT_NOT_FOUND) {
+                        // Key was deleted between ExistKey and Remove (race condition)
+                        LOG(INFO) << "[DELETE] Key " << delete_key
+                                  << " was already deleted (race condition)";
+                    } else {
+                        LOG(ERROR) << "[DELETE] FAILED: key=" << delete_key
+                                   << ", error=" << static_cast<int>(err);
+                    }
                 }
             }
 
@@ -334,6 +389,12 @@ class MockClientSimulator {
         LOG(INFO) << "  Total elapsed time: " << total_elapsed << " seconds";
         LOG(INFO) << "  Average operations/sec: " << final_ops_per_sec;
         LOG(INFO) << "=========================";
+
+        // Stop ping thread
+        running_.store(false);
+        if (ping_thread.joinable()) {
+            ping_thread.join();
+        }
     }
 
     void Stop() { running_.store(false); }
