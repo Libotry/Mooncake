@@ -2258,12 +2258,24 @@ void MasterService::ClientMonitorFunc() {
         // Find out expired clients
         std::vector<UUID> expired_clients;
         for (auto it = client_ttl.begin(); it != client_ttl.end();) {
+            auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(
+                it->second - now).count();
             if (it->second < now) {
                 LOG(INFO) << "client_id=" << it->first
-                          << ", action=client_expired";
+                          << ", action=client_expired"
+                          << ", ttl_sec=" << client_live_ttl_sec_
+                          << ", last_ping_was_sec_ago=" << -remaining_sec;
                 expired_clients.push_back(it->first);
                 it = client_ttl.erase(it);
             } else {
+                // Log warning if TTL is getting close to expiration (within 10 seconds)
+                if (remaining_sec < 10 && remaining_sec > 0) {
+                    LOG(WARNING) << "client_id=" << it->first
+                                 << ", action=ttl_low"
+                                 << ", remaining_sec=" << remaining_sec
+                                 << ", ttl_sec=" << client_live_ttl_sec_
+                                 << " (client may expire soon if no ping received)";
+                }
                 ++it;
             }
         }
