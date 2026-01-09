@@ -1257,8 +1257,39 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
             }
             metadata_shards_[shard_idx].processing_keys.erase(key);
             metadata_shards_[shard_idx].metadata.erase(it);
+        } else if (metadata.HasCompletedReplicas()) {
+            // Allow overwriting existing key even if lease is still active.
+            // This enables update operations. Note that overwriting an object
+            // with an active lease may cause clients reading it to see stale
+            // data, but this is acceptable for update operations.
+            if (metadata.lease_timeout >= now) {
+                // Lease is still active, log a warning but allow overwrite
+                auto remaining_lease_sec = std::chrono::duration_cast<std::chrono::seconds>(
+                    metadata.lease_timeout - now).count();
+                LOG(WARNING) << "key=" << key
+                             << ", info=overwriting_object_with_active_lease"
+                             << ", remaining_lease_sec=" << remaining_lease_sec
+                             << " (clients reading this key may see stale data)";
+            } else {
+                // Lease has expired, this is normal
+                LOG(INFO) << "key=" << key
+                          << ", info=overwriting_expired_object"
+                          << ", lease_expired_at="
+                          << std::chrono::duration_cast<std::chrono::seconds>(
+                                 metadata.lease_timeout.time_since_epoch())
+                                 .count();
+            }
+            // Remove the old object to allow new PutStart
+            metadata_shards_[shard_idx].processing_keys.erase(key);
+            metadata_shards_[shard_idx].metadata.erase(it);
         } else {
-            LOG(INFO) << "key=" << key << ", info=object_already_exists";
+            // Object exists but has not completed replicas and PutStart has not expired
+            LOG(INFO) << "key=" << key << ", info=object_already_exists"
+                      << ", has_completed_replicas=false"
+                      << ", put_start_time="
+                      << std::chrono::duration_cast<std::chrono::seconds>(
+                             metadata.put_start_time.time_since_epoch())
+                             .count();
             return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
         }
     }
