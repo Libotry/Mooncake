@@ -212,6 +212,7 @@ void WrappedMasterService::init_http_server() {
                             const auto& mem_desc = replica_desc.get_memory_descriptor();
                             replica_json["buffer_addr"] = static_cast<Json::UInt64>(mem_desc.buffer_descriptor.buffer_address_);
                             replica_json["buffer_size"] = static_cast<Json::UInt64>(mem_desc.buffer_descriptor.size_);
+                            replica_json["transport_endpoint"] = mem_desc.buffer_descriptor.transport_endpoint_;
                         } else if (replica_desc.is_disk_replica()) {
                             const auto& disk_desc = replica_desc.get_disk_descriptor();
                             replica_json["file_path"] = disk_desc.file_path;
