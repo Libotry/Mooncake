@@ -38,13 +38,9 @@ DEFINE_int32(ping_interval_sec, 20,
 
 namespace mooncake {
 
-// Generate a key name
-std::string GenerateKey(int index, bool is_new_key = false) {
-    if (is_new_key) {
-        static std::atomic<int> new_key_counter{0};
-        return "mock_key_new_" + std::to_string(new_key_counter.fetch_add(1));
-    }
-    return "mock_key_" + std::to_string(index);
+// Generate a key name using timestamp
+std::string GenerateKey(uint64_t timestamp) {
+    return "mock_key_" + std::to_string(timestamp);
 }
 
 // Mock client simulator
@@ -55,7 +51,8 @@ class MockClientSimulator {
           client_id_(generate_uuid()),
           client_(client_id_),
           write_count_(0),
-          key_index_(0),
+          key_index_(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count()),
           running_(true) {
         // Connect to master service
         ErrorCode err = client_.Connect(master_address);
@@ -190,10 +187,11 @@ class MockClientSimulator {
             std::string key;
 
             // Always use a new key, allowing unlimited key growth
+            // Use timestamp-based key index (incremented from initial timestamp)
             key_index_++;
-            key = GenerateKey(key_index_);
+            key = GenerateKey(key_index_.load());
             LOG(INFO) << "[Key Selection] Using key: " << key
-                      << " (index=" << key_index_.load() << ")";
+                      << " (timestamp=" << key_index_.load() << ")";
 
             // Simulate GET operation: check if key exists
             LOG(INFO) << "[GET] Checking if key exists: " << key;
@@ -468,7 +466,7 @@ class MockClientSimulator {
     ReplicateConfig config_;
     Segment mounted_segment_;
     std::atomic<int> write_count_;
-    std::atomic<int> key_index_;
+    std::atomic<uint64_t> key_index_;
     std::atomic<bool> running_;
 };
 
