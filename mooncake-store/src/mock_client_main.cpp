@@ -370,14 +370,23 @@ class MockClientSimulator {
                     LOG(INFO) << "[DELETE] SUCCESS: key=" << delete_key
                               << " deleted";
                 } else {
-                    delete_failure_count++;
                     ErrorCode err = remove_result.error();
                     if (err == ErrorCode::OBJECT_NOT_FOUND) {
                         // Key was deleted between ExistKey and Remove (race condition)
                         written_keys.erase(delete_key);  // Remove from tracked keys anyway
+                        delete_success_count++;  // Treat as success (key is already gone)
                         LOG(INFO) << "[DELETE] Key " << delete_key
                                   << " was already deleted (race condition)";
+                    } else if (err == ErrorCode::OBJECT_HAS_LEASE) {
+                        // Object has active lease, cannot delete yet (this is normal)
+                        // Note: ExistKey may have granted a lease, causing this error
+                        LOG(INFO) << "[DELETE] Key " << delete_key
+                                  << " has active lease, skipping deletion "
+                                  << "(this is normal, the key will be deleted after lease expires)";
+                        // Don't count as failure, and don't remove from written_keys
+                        // so it can be retried later
                     } else {
+                        delete_failure_count++;
                         LOG(ERROR) << "[DELETE] FAILED: key=" << delete_key
                                    << ", error=" << static_cast<int>(err);
                     }
