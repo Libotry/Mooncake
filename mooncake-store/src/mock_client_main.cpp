@@ -5,6 +5,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <iterator>
 #include <random>
 #include <thread>
 #include <unordered_set>
@@ -70,7 +71,7 @@ class MockClientSimulator {
         LOG(INFO) << "Mock client simulator initialized";
         LOG(INFO) << "  master_address: " << master_address;
         LOG(INFO) << "  client_id: " << client_id_;
-        LOG(INFO) << "  max_keys: " << FLAGS_max_keys;
+        LOG(INFO) << "  max_keys: " << FLAGS_max_keys << " (ignored, keys will grow unlimited)";
         LOG(INFO) << "  write_interval_ms: " << FLAGS_write_interval_ms;
         LOG(INFO) << "  delete_interval: " << FLAGS_delete_interval;
         LOG(INFO) << "  value_size: " << FLAGS_value_size;
@@ -188,19 +189,11 @@ class MockClientSimulator {
             // Determine which key to use
             std::string key;
 
-            if (FLAGS_enable_new_keys && write_count_ % 100 == 0 &&
-                write_count_ > 0) {
-                // Every 100 writes, use a new key (beyond max_keys limit)
-                key = GenerateKey(0, true);
-                LOG(INFO) << "[Key Selection] Using new key (every 100 writes): "
-                          << key;
-            } else {
-                // Use one of the max_keys keys
-                key_index_ = (key_index_ + 1) % FLAGS_max_keys;
-                key = GenerateKey(key_index_);
-                LOG(INFO) << "[Key Selection] Using key from pool: " << key
-                          << " (index=" << key_index_.load() << ")";
-            }
+            // Always use a new key, allowing unlimited key growth
+            key_index_++;
+            key = GenerateKey(key_index_);
+            LOG(INFO) << "[Key Selection] Using key: " << key
+                      << " (index=" << key_index_.load() << ")";
 
             // Simulate GET operation: check if key exists
             LOG(INFO) << "[GET] Checking if key exists: " << key;
@@ -337,11 +330,14 @@ class MockClientSimulator {
             // Simulate DELETE operation periodically
             if (FLAGS_delete_interval > 0 &&
                 write_count_ % FLAGS_delete_interval == 0 &&
-                write_count_ > 0) {
+                write_count_ > 0 && !written_keys.empty()) {
                 delete_count++;
-                // Delete one of the existing keys (not new keys)
-                int delete_key_index = (key_index_ + 1) % FLAGS_max_keys;
-                std::string delete_key = GenerateKey(delete_key_index);
+                // Delete a random key from the written keys set
+                // Use a simple hash-based selection for deterministic behavior
+                size_t key_to_delete_index = (write_count_ / FLAGS_delete_interval) % written_keys.size();
+                auto it = written_keys.begin();
+                std::advance(it, key_to_delete_index);
+                std::string delete_key = *it;
                 LOG(INFO) << "[DELETE] Attempting to delete key: " << delete_key
                           << " (delete operation #" << delete_count << ")";
 
@@ -370,6 +366,7 @@ class MockClientSimulator {
                 auto remove_result = client_.Remove(delete_key);
                 if (remove_result.has_value()) {
                     delete_success_count++;
+                    written_keys.erase(delete_key);  // Remove from tracked keys
                     LOG(INFO) << "[DELETE] SUCCESS: key=" << delete_key
                               << " deleted";
                 } else {
@@ -377,6 +374,7 @@ class MockClientSimulator {
                     ErrorCode err = remove_result.error();
                     if (err == ErrorCode::OBJECT_NOT_FOUND) {
                         // Key was deleted between ExistKey and Remove (race condition)
+                        written_keys.erase(delete_key);  // Remove from tracked keys anyway
                         LOG(INFO) << "[DELETE] Key " << delete_key
                                   << " was already deleted (race condition)";
                     } else {
