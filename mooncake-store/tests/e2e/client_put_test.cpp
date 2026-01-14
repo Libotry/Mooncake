@@ -13,8 +13,9 @@
 
 // Command line flags
 DEFINE_string(hostname, "localhost:9001", "Local hostname for the client");
-DEFINE_string(metadata_server, "http://127.0.0.1:8080/metadata",
-              "Metadata server connection string");
+DEFINE_string(metadata_server, "P2PHANDSHAKE",
+              "Metadata server connection string. Use 'P2PHANDSHAKE' for P2P mode "
+              "(no HTTP metadata server required), or 'http://IP:PORT/metadata' for HTTP mode");
 DEFINE_string(protocol, "tcp", "Transfer protocol: rdma|tcp");
 DEFINE_string(device_name, "", "Device name to use, valid if protocol=rdma");
 DEFINE_string(master_server_entry, "127.0.0.1:50051",
