@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <iomanip>
 #include <regex>
 #include <unordered_set>
 #include <shared_mutex>
@@ -728,44 +727,35 @@ void MasterService::ClearInvalidHandles() {
 auto MasterService::UnmountSegment(const UUID& segment_id,
                                    const UUID& client_id)
     -> tl::expected<void, ErrorCode> {
-    // Libotry:TEMPORARY: Disable segment unmounting for debugging
-    // TODO: Remove this after debugging client expiration issues
-    LOG(WARNING) << "TEMPORARY: UnmountSegment disabled for debugging. "
-                 << "Would have unmounted segment_id=" << segment_id
-                 << ", client_id=" << client_id
-                 << ". This is a temporary workaround and should be removed.";
-    return {};  // Return success without actually unmounting
-    
-    // Original code (commented out for temporary disable):
-    // size_t metrics_dec_capacity = 0;  // to update the metrics
-    //
-    // // 1. Prepare to unmount the segment by deleting its allocator
-    // {
-    //     ScopedSegmentAccess segment_access =
-    //         segment_manager_.getSegmentAccess();
-    //     ErrorCode err = segment_access.PrepareUnmountSegment(
-    //         segment_id, metrics_dec_capacity);
-    //     if (err == ErrorCode::SEGMENT_NOT_FOUND) {
-    //         // Return OK because this is an idempotent operation
-    //         return {};
-    //     }
-    //     if (err != ErrorCode::OK) {
-    //         return tl::make_unexpected(err);
-    //     }
-    // }  // Release the segment mutex before long-running step 2 and avoid
-    //    // deadlocks
-    //
-    // // 2. Remove the metadata of the related objects
-    // ClearInvalidHandles();
-    //
-    // // 3. Commit the unmount operation
-    // ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
-    // auto err = segment_access.CommitUnmountSegment(segment_id, client_id,
-    //                                                metrics_dec_capacity);
-    // if (err != ErrorCode::OK) {
-    //     return tl::make_unexpected(err);
-    // }
-    // return {};
+    size_t metrics_dec_capacity = 0;  // to update the metrics
+
+    // 1. Prepare to unmount the segment by deleting its allocator
+    {
+        ScopedSegmentAccess segment_access =
+            segment_manager_.getSegmentAccess();
+        ErrorCode err = segment_access.PrepareUnmountSegment(
+            segment_id, metrics_dec_capacity);
+        if (err == ErrorCode::SEGMENT_NOT_FOUND) {
+            // Return OK because this is an idempotent operation
+            return {};
+        }
+        if (err != ErrorCode::OK) {
+            return tl::make_unexpected(err);
+        }
+    }  // Release the segment mutex before long-running step 2 and avoid
+       // deadlocks
+
+    // 2. Remove the metadata of the related objects
+    ClearInvalidHandles();
+
+    // 3. Commit the unmount operation
+    ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
+    auto err = segment_access.CommitUnmountSegment(segment_id, client_id,
+                                                   metrics_dec_capacity);
+    if (err != ErrorCode::OK) {
+        return tl::make_unexpected(err);
+    }
+    return {};
 }
 
 auto MasterService::ExistKey(const std::string& key)
@@ -813,36 +803,6 @@ auto MasterService::GetAllKeys()
         }
     }
     return all_keys;
-}
-
-auto MasterService::GetAllMetadata()
-    -> tl::expected<std::vector<MasterService::KeyMetadataInfo>, ErrorCode> {
-    std::vector<KeyMetadataInfo> all_metadata;
-    for (size_t i = 0; i < kNumShards; i++) {
-        MutexLocker lock(&metadata_shards_[i].mutex);
-        for (const auto& item : metadata_shards_[i].metadata) {
-            const std::string& key = item.first;
-            const ObjectMetadata& metadata = item.second;
-
-            KeyMetadataInfo info;
-            info.key = key;
-            info.client_id = metadata.client_id;
-            info.size = metadata.size;
-            info.replica_count = metadata.replicas.size();
-            info.put_start_time = metadata.put_start_time;
-            info.lease_timeout = metadata.lease_timeout;
-            info.soft_pin_timeout = metadata.soft_pin_timeout;
-
-            // Extract replica descriptors
-            info.replicas.reserve(metadata.replicas.size());
-            for (const auto& replica : metadata.replicas) {
-                info.replicas.push_back(replica.get_descriptor());
-            }
-
-            all_metadata.push_back(std::move(info));
-        }
-    }
-    return all_metadata;
 }
 
 auto MasterService::GetAllSegments()
@@ -1311,26 +1271,8 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
             preferred_segments);
 
         if (!allocation_result.has_value()) {
-            // Log detailed diagnostic information
-            ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
-            std::vector<std::string> all_segments;
-            segment_access.GetAllSegments(all_segments);
-            
-            LOG(WARNING) << "Failed to allocate all replicas for key=" << key
-                         << ", error: " << allocation_result.error()
-                         << ", available_segments=" << all_segments.size();
-            for (const auto& seg_name : all_segments) {
-                size_t used = 0, capacity = 0;
-                if (segment_access.QuerySegments(seg_name, used, capacity) == ErrorCode::OK) {
-                    double usage_percent = (capacity > 0) ? (100.0 * used / capacity) : 0.0;
-                    LOG(WARNING) << "  segment=" << seg_name
-                                 << ", used=" << used << " bytes"
-                                 << ", capacity=" << capacity << " bytes"
-                                 << ", usage=" << std::fixed << std::setprecision(2)
-                                 << usage_percent << "%";
-                }
-            }
-            
+            VLOG(1) << "Failed to allocate all replicas for key=" << key
+                    << ", error: " << allocation_result.error();
             if (allocation_result.error() == ErrorCode::INVALID_PARAMS) {
                 return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
             }
@@ -1704,9 +1646,6 @@ auto MasterService::Ping(const UUID& client_id)
                    << ", error=client_ping_queue_full";
         return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
     }
-    VLOG(1) << "Ping: client_id=" << client_id
-            << ", status=" << (client_status == ClientStatus::OK ? "OK" : "NEED_REMOUNT")
-            << ", pushed to ping queue";
     return PingResponse(view_version_, client_status);
 }
 
@@ -2271,19 +2210,10 @@ void MasterService::ClientMonitorFunc() {
 
         // Update the client ttl
         PodUUID pod_client_id;
-        int ping_count = 0;
         while (client_ping_queue_.pop(pod_client_id)) {
             UUID client_id = {pod_client_id.first, pod_client_id.second};
-            auto new_ttl = now + std::chrono::seconds(client_live_ttl_sec_);
-            client_ttl[client_id] = new_ttl;
-            ping_count++;
-            VLOG(1) << "ClientMonitor: updated TTL for client_id=" << client_id
-                    << ", new_ttl=" << std::chrono::duration_cast<std::chrono::seconds>(
-                        new_ttl.time_since_epoch()).count()
-                    << ", remaining_sec=" << client_live_ttl_sec_;
-        }
-        if (ping_count > 0) {
-            VLOG(1) << "ClientMonitor: processed " << ping_count << " ping(s)";
+            client_ttl[client_id] =
+                now + std::chrono::seconds(client_live_ttl_sec_);
         }
 
         // Find out expired clients
@@ -2357,31 +2287,17 @@ void MasterService::ClientMonitorFunc() {
                // avoid deadlocks
 
             if (!unmount_segments.empty()) {
-                // Libotry:TEMPORARY: Disable segment unmounting for debugging
-                // TODO: Remove this after debugging client expiration issues
-                LOG(WARNING) << "TEMPORARY: Segment unmounting disabled for debugging. "
-                             << "Would have unmounted " << unmount_segments.size()
-                             << " segment(s) for expired clients. "
-                             << "This is a temporary workaround and should be removed.";
-                
-                // Skip unmounting - just log what would have been unmounted
+                ClearInvalidHandles();
+
+                ScopedSegmentAccess segment_access =
+                    segment_manager_.getSegmentAccess();
                 for (size_t i = 0; i < unmount_segments.size(); i++) {
-                    LOG(WARNING) << "  Would unmount: client_id=" << client_ids[i]
-                                 << ", segment_name=" << segment_names[i]
-                                 << ", segment_id=" << unmount_segments[i];
+                    segment_access.CommitUnmountSegment(
+                        unmount_segments[i], client_ids[i], dec_capacities[i]);
+                    LOG(INFO) << "client_id=" << client_ids[i]
+                              << ", segment_name=" << segment_names[i]
+                              << ", action=unmount_expired_segment";
                 }
-                
-                // Original code (commented out for temporary disable):
-                // ClearInvalidHandles();
-                // ScopedSegmentAccess segment_access =
-                //     segment_manager_.getSegmentAccess();
-                // for (size_t i = 0; i < unmount_segments.size(); i++) {
-                //     segment_access.CommitUnmountSegment(
-                //         unmount_segments[i], client_ids[i], dec_capacities[i]);
-                //     LOG(INFO) << "client_id=" << client_ids[i]
-                //               << ", segment_name=" << segment_names[i]
-                //               << ", action=unmount_expired_segment";
-                // }
             }
         }
 

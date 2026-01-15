@@ -3,8 +3,6 @@
 #include <ylt/struct_json/json_reader.h>
 #include <ylt/struct_json/json_writer.h>
 
-#include <json/json.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -154,90 +152,6 @@ void WrappedMasterService::init_http_server() {
             } else {
                 resp.set_status_and_content(status_type::internal_server_error,
                                             "Failed to get all keys");
-            }
-        });
-
-    http_server_.set_http_handler<GET>(
-        "/get_all_metadata", [&](coro_http_request& req, coro_http_response& resp) {
-            resp.add_header("Content-Type", "application/json; version=0.0.4");
-
-            auto result = master_service_.GetAllMetadata();
-            if (result) {
-                // Convert time points to milliseconds since epoch for JSON serialization
-                auto now = std::chrono::steady_clock::now();
-                auto epoch = std::chrono::steady_clock::time_point{};
-
-                Json::Value root(Json::arrayValue);
-                for (const auto& info : result.value()) {
-                    Json::Value item;
-                    item["key"] = info.key;
-                    item["client_id"] = std::to_string(info.client_id.first) + "-" +
-                                        std::to_string(info.client_id.second);
-                    item["size"] = static_cast<Json::UInt64>(info.size);
-                    item["replica_count"] = static_cast<Json::UInt64>(info.replica_count);
-
-                    // Convert time points to milliseconds since epoch
-                    auto put_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        info.put_start_time - epoch).count();
-                    item["put_start_time_ms"] = static_cast<Json::Int64>(put_start_ms);
-
-                    auto lease_timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        info.lease_timeout - epoch).count();
-                    item["lease_timeout_ms"] = static_cast<Json::Int64>(lease_timeout_ms);
-                    item["lease_remaining_ms"] = static_cast<Json::Int64>(
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            info.lease_timeout - now).count());
-
-                    if (info.soft_pin_timeout.has_value()) {
-                        auto soft_pin_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            info.soft_pin_timeout.value() - epoch).count();
-                        item["soft_pin_timeout_ms"] = static_cast<Json::Int64>(soft_pin_ms);
-                        item["soft_pin_remaining_ms"] = static_cast<Json::Int64>(
-                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                info.soft_pin_timeout.value() - now).count());
-                    } else {
-                        item["soft_pin_timeout_ms"] = Json::nullValue;
-                        item["soft_pin_remaining_ms"] = Json::nullValue;
-                    }
-
-                    // Serialize replicas
-                    Json::Value replicas_json(Json::arrayValue);
-                    for (const auto& replica_desc : info.replicas) {
-                        Json::Value replica_json;
-                        replica_json["type"] = replica_desc.is_memory_replica() ? "MEMORY" :
-                                              replica_desc.is_disk_replica() ? "DISK" : "LOCAL_DISK";
-                        replica_json["status"] = static_cast<int>(replica_desc.status);
-
-                        if (replica_desc.is_memory_replica()) {
-                            const auto& mem_desc = replica_desc.get_memory_descriptor();
-                            replica_json["buffer_addr"] = static_cast<Json::UInt64>(mem_desc.buffer_descriptor.buffer_address_);
-                            replica_json["buffer_size"] = static_cast<Json::UInt64>(mem_desc.buffer_descriptor.size_);
-                            replica_json["transport_endpoint"] = mem_desc.buffer_descriptor.transport_endpoint_;
-                        } else if (replica_desc.is_disk_replica()) {
-                            const auto& disk_desc = replica_desc.get_disk_descriptor();
-                            replica_json["file_path"] = disk_desc.file_path;
-                            replica_json["object_size"] = static_cast<Json::UInt64>(disk_desc.object_size);
-                        } else {
-                            const auto& local_disk_desc = replica_desc.get_local_disk_descriptor();
-                            replica_json["client_id"] = std::to_string(local_disk_desc.client_id_first) + "-" +
-                                                        std::to_string(local_disk_desc.client_id_second);
-                            replica_json["object_size"] = static_cast<Json::UInt64>(local_disk_desc.object_size);
-                            replica_json["transport_endpoint"] = local_disk_desc.transport_endpoint;
-                        }
-                        replicas_json.append(replica_json);
-                    }
-                    item["replicas"] = replicas_json;
-
-                    root.append(item);
-                }
-
-                Json::StreamWriterBuilder builder;
-                builder["indentation"] = "  ";
-                std::string json_str = Json::writeString(builder, root);
-                resp.set_status_and_content(status_type::ok, std::move(json_str));
-            } else {
-                resp.set_status_and_content(status_type::internal_server_error,
-                                            "Failed to get all metadata");
             }
         });
 
