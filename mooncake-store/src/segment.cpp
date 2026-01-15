@@ -195,6 +195,9 @@ ErrorCode ScopedSegmentAccess::CommitUnmountSegment(
     auto&& segment = segment_manager_->mounted_segments_.find(segment_id);
     if (segment != segment_manager_->mounted_segments_.end()) {
         segment_name = segment->second.segment.name;
+        // Clear te_endpoint before removing the segment to prevent stale endpoints
+        // from being returned to new clients
+        segment->second.segment.te_endpoint.clear();
     }
     // Remove from mounted_segments_
     segment_manager_->mounted_segments_.erase(segment_id);
