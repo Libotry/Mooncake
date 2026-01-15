@@ -1157,6 +1157,13 @@ auto MasterService::GetReplicaList(std::string_view key)
     replica_list.reserve(metadata.replicas.size());
     for (const auto& replica : metadata.replicas) {
         if (replica.status() == ReplicaStatus::COMPLETE) {
+            // Skip MEMORY replicas with invalid handles (e.g., segment unmounted)
+            // to avoid returning stale transport_endpoints to clients
+            if (replica.is_memory_replica() && replica.has_invalid_mem_handle()) {
+                VLOG(1) << "key=" << key
+                        << ", skipping invalid MEMORY replica (segment unmounted)";
+                continue;
+            }
             replica_list.emplace_back(replica.get_descriptor());
         }
     }
