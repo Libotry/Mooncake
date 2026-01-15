@@ -1833,7 +1833,7 @@ void Client::PingThreadMain(bool is_ha_mode,
                             // Same address but version changed (e.g., master
                             // restarted), update version
                             last_known_view_version = new_version;
-                            LOG(INFO) << "Master address unchanged but view "
+                            LOG(INFO) << "Master address" << new_master_address << " unchanged but view "
                                          "version updated: "
                                       << new_version;
                         }

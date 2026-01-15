@@ -344,6 +344,11 @@ class MasterService {
     std::string SanitizeKey(const std::string& key) const;
     std::string ResolvePath(const std::string& key) const;
 
+    // Helper method for stale endpoint cleanup (Phase 1)
+    // Remove a specific replica from an object's metadata
+    friend class StaleEndpointCleanupManager;
+    ErrorCode RemoveReplicaByIndex(const std::string& key, size_t replica_index);
+
     // BatchEvict evicts objects in a near-LRU way, i.e., prioritizes to evict
     // object with smaller lease timeout. It has two passes. The first pass only
     // evicts objects without soft pin. The second pass prioritizes objects
@@ -717,6 +722,7 @@ class MasterService {
     };
 
     friend class MetadataAccessor;
+    friend class StaleEndpointCleanupManager;
 
     ViewVersionId view_version_;
 

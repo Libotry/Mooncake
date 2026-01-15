@@ -8,6 +8,8 @@
 #include <ylt/util/tl/expected.hpp>
 #include <ylt/struct_json/json_writer.h>
 
+#include "stale_endpoint_cleanup.h"
+
 #include "allocator.h"
 #include "etcd_helper.h"
 #include "etcd_oplog_store.h"
@@ -353,6 +355,19 @@ void MasterService::RestoreFromStandbySnapshot(
 
     LOG(INFO) << "Restored metadata from standby snapshot: restored_keys="
               << restored << ", initial_oplog_sequence_id=" << initial_oplog_sequence_id;
+
+    // Phase 1: Trigger stale endpoint cleanup (asynchronous)
+    if (enable_ha_) {
+        static StaleEndpointCleanupManager cleanup_manager;
+        StaleEndpointCleanupManager::CleanupConfig config;
+        config.enable_async_cleanup = true;
+        config.async_delay = std::chrono::seconds(5);  // Delay 5 seconds for system stability
+        config.validation_timeout = std::chrono::milliseconds(500);
+        config.max_concurrent_validations = 10;
+
+        cleanup_manager.ValidateAndCleanupStaleEndpoints(this, config);
+        LOG(INFO) << "Triggered stale endpoint cleanup after HA failover";
+    }
 }
 
 MasterService::~MasterService() {
@@ -2343,6 +2358,78 @@ std::string MasterService::ResolvePath(const std::string& key) const {
 
 OpLogManager& MasterService::GetOpLogManager() {
     return oplog_manager_;
+}
+
+ErrorCode MasterService::RemoveReplicaByIndex(const std::string& key,
+                                              size_t replica_index) {
+    MetadataAccessor accessor(this, key);
+    if (!accessor.Exists()) {
+        LOG(WARNING) << "Key not found during replica removal: " << key;
+        return ErrorCode::OBJECT_NOT_FOUND;
+    }
+
+    auto& metadata = accessor.Get();
+
+    // Check if replica_index is valid
+    if (replica_index >= metadata.replicas.size()) {
+        LOG(WARNING) << "Invalid replica_index during removal: " << replica_index
+                    << ", key=" << key << ", num_replicas="
+                    << metadata.replicas.size();
+        return ErrorCode::INVALID_PARAMS;
+    }
+
+    // Get replica type for metrics
+    const auto& replica = metadata.replicas[replica_index];
+    bool was_complete = (replica.status() == ReplicaStatus::COMPLETE);
+
+    if (was_complete) {
+        if (replica.is_memory_replica()) {
+            MasterMetricManager::instance().dec_mem_cache_nums();
+        } else if (replica.is_disk_replica()) {
+            MasterMetricManager::instance().dec_file_cache_nums();
+        }
+    }
+
+    // Remove the replica
+    metadata.replicas.erase(metadata.replicas.begin() + replica_index);
+
+    // If no valid replicas remain, erase the entire metadata
+    if (metadata.replicas.empty() || !metadata.IsValid()) {
+#ifdef STORE_USE_ETCD
+        if (enable_ha_) {
+            AppendOrPersistOrEnqueue("RemoveReplicaByIndex(REMOVE)",
+                                    OpType::REMOVE, key, std::string(),
+                                    PendingMutationKind::CLEAR_ALL_REPLICAS);
+        } else {
+            AppendOpLogAndNotify(OpType::REMOVE, key);
+        }
+#else
+        if (!enable_ha_) {
+            AppendOpLogAndNotify(OpType::REMOVE, key);
+        }
+#endif
+        accessor.Erase();
+    } else {
+        // Update metadata (remove this replica)
+#ifdef STORE_USE_ETCD
+        if (enable_ha_) {
+            std::vector<Replica::Descriptor> remaining;
+            remaining.reserve(metadata.replicas.size());
+            for (const auto& r : metadata.replicas) {
+                remaining.push_back(r.get_descriptor());
+            }
+            const std::string payload =
+                SerializeMetadataForOpLogFromReplicaDescriptors(
+                    metadata.client_id, static_cast<uint64_t>(metadata.size),
+                    remaining);
+            AppendOrPersistOrEnqueue("RemoveReplicaByIndex(PUT_END)",
+                                    OpType::PUT_END, key, payload,
+                                    PendingMutationKind::EVICT_MEM_REPLICAS);
+        }
+#endif
+    }
+
+    return ErrorCode::OK;
 }
 
 // SetReplicationService removed - using etcd-based OpLog sync instead
