@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "types.h"
+
 namespace mooncake {
 
 /**
@@ -18,7 +20,7 @@ class EndpointValidator {
     struct EndpointInfo {
         std::string endpoint;  // "IP:Port" format
         enum Type {
-            SEGMENT_TE_ENDPOINT,      // Segment's te_endpoint
+            SEGMENT_TE_ENDPOINT,        // Segment's te_endpoint
             REPLICA_TRANSPORT_ENDPOINT  // Replica's transport_endpoint
         } type;
 

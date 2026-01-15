@@ -60,6 +60,7 @@ struct LocalDiskSegment {
 
 // Forward declarations
 class SegmentManager;
+class StaleEndpointCleanupManager;
 
 /**
  * @brief RAII-style access to segment mutex for thread-safe segment operations
@@ -125,6 +126,8 @@ class ScopedSegmentAccess {
    private:
     SegmentManager* segment_manager_;
     std::unique_lock<std::shared_mutex> lock_;
+
+    friend class StaleEndpointCleanupManager;
 };
 
 /**
@@ -226,6 +229,7 @@ class SegmentManager {
         client_local_disk_segment_;  // client_id -> local_disk_segment
 
     friend class ScopedSegmentAccess;
+    friend class StaleEndpointCleanupManager;
     friend class SegmentTest;  // for unit tests
 };
 
