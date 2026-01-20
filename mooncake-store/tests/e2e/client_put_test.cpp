@@ -22,8 +22,8 @@ DEFINE_string(master_server_entry, "127.0.0.1:50051",
               "Master server entry (IP:Port)");
 DEFINE_int32(segment_size_mb, 128, "Segment size in MB");
 DEFINE_int32(value_size, 1024, "Value size in bytes (default: 1KB)");
-DEFINE_int32(operation_interval_sec, 1,
-             "Interval between operations (GET+PUT) in seconds");
+DEFINE_int32(operation_interval_microsec, 1,
+             "Interval between operations (GET+PUT) in microseconds");
 DEFINE_int32(max_operations, 0,
              "Maximum number of operations (0 = unlimited)");
 DEFINE_int32(key_space_size, 1000,
@@ -83,7 +83,8 @@ class ClientPutTester {
 
     void Run() {
         LOG(INFO) << "Starting inference simulation test:";
-        LOG(INFO) << "  Operation interval: " << FLAGS_operation_interval_sec << "s";
+        LOG(INFO) << "  Operation interval: " << FLAGS_operation_interval_microsec
+                  << " us";
         LOG(INFO) << "  Value size: " << FLAGS_value_size << " bytes";
         LOG(INFO) << "  Key space size: " << FLAGS_key_space_size
                   << " (smaller = higher hit rate as data accumulates)";
@@ -155,7 +156,7 @@ class ClientPutTester {
 
             // Sleep for the specified interval
             std::this_thread::sleep_for(
-                std::chrono::seconds(FLAGS_operation_interval_sec));
+                std::chrono::microseconds(FLAGS_operation_interval_microsec));
         }
 
         // Final statistics report
