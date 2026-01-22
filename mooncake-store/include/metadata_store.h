@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "metadata_wire.h"
 #include "replica.h"
 #include "types.h"
 #include "ylt/struct_json/json_reader.h"
@@ -42,7 +43,7 @@ struct MetadataPayload {
     uint64_t client_id_first{0};   // UUID.first
     uint64_t client_id_second{0};  // UUID.second
     uint64_t size{0};
-    std::vector<Replica::Descriptor> replicas;
+    std::vector<ReplicaDescriptorWire> replicas;
     // NOTE: Lease information removed - not needed by Standby
     
     YLT_REFL(MetadataPayload, client_id_first, client_id_second, size, replicas);
@@ -52,7 +53,11 @@ struct MetadataPayload {
         StandbyObjectMetadata meta;
         meta.client_id = {client_id_first, client_id_second};
         meta.size = size;
-        meta.replicas = replicas;
+        meta.replicas.clear();
+        meta.replicas.reserve(replicas.size());
+        for (const auto& r : replicas) {
+            meta.replicas.push_back(FromWireReplicaDescriptor(r));
+        }
         meta.last_sequence_id = sequence_id;
         return meta;
     }

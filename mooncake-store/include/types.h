@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cctype>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -12,6 +16,122 @@
 #include "Slab.h"
 #include "ylt/struct_json/json_reader.h"
 #include "ylt/struct_json/json_writer.h"
+
+// Compatibility: ylt/struct_json (iguana) doesn't always provide from_json for
+// std::pair, but some internal types use UUID = std::pair<uint64_t, uint64_t>.
+// Provide a minimal parser that accepts either `[first, second]` or
+// `{ "first": ..., "second": ... }`.
+namespace iguana {
+namespace detail {
+
+template <typename It>
+static inline void mooncake_skip_ws(It& it, const It& end) {
+    while (it != end && std::isspace(static_cast<unsigned char>(*it))) {
+        ++it;
+    }
+}
+
+template <typename It>
+static inline std::string mooncake_parse_json_string(It& it, const It& end) {
+    mooncake_skip_ws(it, end);
+    if (it == end || *it != '"') {
+        throw std::runtime_error("expected JSON string");
+    }
+    ++it;
+    std::string out;
+    while (it != end && *it != '"') {
+        char c = *it;
+        if (c == '\\') {
+            ++it;
+            if (it == end) {
+                throw std::runtime_error("unterminated JSON escape");
+            }
+            out.push_back(*it);
+            ++it;
+            continue;
+        }
+        out.push_back(c);
+        ++it;
+    }
+    if (it == end) {
+        throw std::runtime_error("unterminated JSON string");
+    }
+    ++it;
+    return out;
+}
+
+template <typename It>
+static inline void mooncake_expect(It& it, const It& end, char expected) {
+    mooncake_skip_ws(it, end);
+    if (it == end || *it != expected) {
+        throw std::runtime_error("unexpected JSON token");
+    }
+    ++it;
+}
+
+template <class T1, class T2, class It>
+inline void from_json_impl(std::pair<T1, T2>& value, It&& it, It&& end) {
+    using Iter = std::remove_reference_t<It>;
+    Iter& it_ref = it;
+    Iter& end_ref = end;
+
+    mooncake_skip_ws(it_ref, end_ref);
+    if (it_ref == end_ref) {
+        throw std::runtime_error("unexpected end of JSON");
+    }
+
+    if (*it_ref == '[') {
+        ++it_ref;
+        mooncake_skip_ws(it_ref, end_ref);
+        from_json_impl(value.first, it_ref, end_ref);
+        mooncake_expect(it_ref, end_ref, ',');
+        from_json_impl(value.second, it_ref, end_ref);
+        mooncake_expect(it_ref, end_ref, ']');
+        return;
+    }
+
+    if (*it_ref == '{') {
+        ++it_ref;
+        mooncake_skip_ws(it_ref, end_ref);
+        if (it_ref != end_ref && *it_ref == '}') {
+            ++it_ref;
+            throw std::runtime_error("pair object is empty");
+        }
+
+        auto parse_kv = [&](bool& seen_first, bool& seen_second) {
+            const std::string key = mooncake_parse_json_string(it_ref, end_ref);
+            mooncake_expect(it_ref, end_ref, ':');
+            if (key == "first") {
+                from_json_impl(value.first, it_ref, end_ref);
+                seen_first = true;
+            } else if (key == "second") {
+                from_json_impl(value.second, it_ref, end_ref);
+                seen_second = true;
+            } else {
+                throw std::runtime_error("unexpected key in pair object");
+            }
+        };
+
+        bool seen_first = false;
+        bool seen_second = false;
+        parse_kv(seen_first, seen_second);
+        mooncake_skip_ws(it_ref, end_ref);
+        if (it_ref != end_ref && *it_ref == ',') {
+            ++it_ref;
+            parse_kv(seen_first, seen_second);
+        }
+        mooncake_expect(it_ref, end_ref, '}');
+        if (!seen_first || !seen_second) {
+            throw std::runtime_error("pair object missing field");
+        }
+        return;
+    }
+
+    throw std::runtime_error("expected pair as array/object");
+}
+
+}  // namespace detail
+}  // namespace iguana
 
 #ifdef STORE_USE_ETCD
 #include "libetcd_wrapper.h"
