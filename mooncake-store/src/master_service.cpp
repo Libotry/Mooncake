@@ -71,8 +71,8 @@ static Replica ReplicaFromDescriptor(
         return Replica(disk.file_path, disk.object_size, desc.status);
     }
     const auto& ld = desc.get_local_disk_descriptor();
-    UUID client_id{ld.client_id_first, ld.client_id_second};
-    return Replica(client_id, ld.object_size, ld.transport_endpoint, desc.status);
+    return Replica(ld.client_id, ld.object_size, ld.transport_endpoint,
+                   desc.status);
 }
 
 }  // namespace
@@ -88,7 +88,8 @@ std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metad
     // Extract replica descriptors
     payload.replicas.reserve(metadata.replicas.size());
     for (const auto& replica : metadata.replicas) {
-        payload.replicas.push_back(replica.get_descriptor());
+        payload.replicas.push_back(
+            ToWireReplicaDescriptor(replica.get_descriptor()));
     }
     
     // NOTE: Lease information is NOT serialized because:
@@ -113,7 +114,8 @@ std::string MasterService::SerializeMetadataForOpLogWithoutMemReplicas(
         if (replica.type() == ReplicaType::MEMORY) {
             continue;
         }
-        payload.replicas.push_back(replica.get_descriptor());
+        payload.replicas.push_back(
+            ToWireReplicaDescriptor(replica.get_descriptor()));
     }
 
     std::string json_str;
@@ -128,7 +130,11 @@ std::string MasterService::SerializeMetadataForOpLogFromReplicaDescriptors(
     payload.client_id_first = client_id.first;
     payload.client_id_second = client_id.second;
     payload.size = size;
-    payload.replicas = replicas;
+    payload.replicas.clear();
+    payload.replicas.reserve(replicas.size());
+    for (const auto& r : replicas) {
+        payload.replicas.push_back(ToWireReplicaDescriptor(r));
+    }
     std::string json_str;
     struct_json::to_json(payload, json_str);
     return json_str;
@@ -2219,24 +2225,12 @@ void MasterService::ClientMonitorFunc() {
         // Find out expired clients
         std::vector<UUID> expired_clients;
         for (auto it = client_ttl.begin(); it != client_ttl.end();) {
-            auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(
-                it->second - now).count();
             if (it->second < now) {
                 LOG(INFO) << "client_id=" << it->first
-                          << ", action=client_expired"
-                          << ", ttl_sec=" << client_live_ttl_sec_
-                          << ", last_ping_was_sec_ago=" << -remaining_sec;
+                          << ", action=client_expired";
                 expired_clients.push_back(it->first);
                 it = client_ttl.erase(it);
             } else {
-                // Log warning if TTL is getting close to expiration (within 10 seconds)
-                if (remaining_sec < 10 && remaining_sec > 0) {
-                    LOG(WARNING) << "client_id=" << it->first
-                                 << ", action=ttl_low"
-                                 << ", remaining_sec=" << remaining_sec
-                                 << ", ttl_sec=" << client_live_ttl_sec_
-                                 << " (client may expire soon if no ping received)";
-                }
                 ++it;
             }
         }
