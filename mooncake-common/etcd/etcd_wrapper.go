@@ -17,11 +17,11 @@ typedef void (*watch_cb_v1_t)(void* ctx,
                              const char* value, size_t valueSize,
                              int eventType);
 
-static inline void call_watch_cb_v1(void* func,
-                                    void* ctx,
-                                    const char* key, size_t keySize,
-                                    const char* value, size_t valueSize,
-                                    int eventType) {
+void call_watch_cb_v1(void* func,
+                      void* ctx,
+                      const char* key, size_t keySize,
+                      const char* value, size_t valueSize,
+                      int eventType) {
   ((watch_cb_v1_t)func)(ctx, key, keySize, value, valueSize, eventType);
 }
 
@@ -31,12 +31,12 @@ typedef void (*watch_cb_v2_t)(void* ctx,
                              int eventType,
                              long long modRev);
 
-static inline void call_watch_cb_v2(void* func,
-                                    void* ctx,
-                                    const char* key, size_t keySize,
-                                    const char* value, size_t valueSize,
-                                    int eventType,
-                                    long long modRev) {
+void call_watch_cb_v2(void* func,
+                      void* ctx,
+                      const char* key, size_t keySize,
+                      const char* value, size_t valueSize,
+                      int eventType,
+                      long long modRev) {
   ((watch_cb_v2_t)func)(ctx, key, keySize, value, valueSize, eventType, modRev);
 }
 #endif // MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
