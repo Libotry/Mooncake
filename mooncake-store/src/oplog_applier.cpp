@@ -454,13 +454,13 @@ void OpLogApplier::ApplyPutEnd(const OpLogEntry& entry) {
     MetadataPayload payload;
     bool parse_success = false;
     auto result = struct_pack::deserialize_to(payload, entry.payload);
-    if (result) {
+    if (result == struct_pack::errc::ok) {
         parse_success = true;
     } else {
         LOG(ERROR) << "OpLogApplier: failed to deserialize payload for key=" << entry.object_key
                    << ", sequence_id=" << entry.sequence_id
                    << ", payload_size=" << entry.payload.size()
-                   << ", error_code=" << static_cast<int>(result.error());
+                   << ", error_code=" << static_cast<int>(result);
     }
     
     if (!parse_success) {
