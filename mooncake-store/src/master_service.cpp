@@ -88,7 +88,45 @@ std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metad
     // Extract replica descriptors
     payload.replicas.reserve(metadata.replicas.size());
     for (const auto& replica : metadata.replicas) {
-        payload.replicas.push_back(replica.get_descriptor());
+        auto desc = replica.get_descriptor();
+        payload.replicas.push_back(desc);
+        
+        // DIAGNOSTIC: Check if get_descriptor() is deterministic
+        auto desc2 = replica.get_descriptor();
+        bool descriptor_match = true;
+        
+        if (desc.status != desc2.status) {
+            LOG(ERROR) << "FATAL: get_descriptor() returns different status! "
+                      << static_cast<int>(desc.status) << " vs " << static_cast<int>(desc2.status);
+            descriptor_match = false;
+        }
+        
+        if (desc.descriptor_variant.index() != desc2.descriptor_variant.index()) {
+            LOG(ERROR) << "FATAL: get_descriptor() returns different variant index! "
+                      << desc.descriptor_variant.index() << " vs " << desc2.descriptor_variant.index();
+            descriptor_match = false;
+        }
+        
+        // Check variant content based on type
+        if (desc.is_memory_replica() && desc2.is_memory_replica()) {
+            const auto& mem1 = desc.get_memory_descriptor();
+            const auto& mem2 = desc2.get_memory_descriptor();
+            if (mem1.buffer_descriptor.size_ != mem2.buffer_descriptor.size_ ||
+                mem1.buffer_descriptor.buffer_address_ != mem2.buffer_descriptor.buffer_address_ ||
+                mem1.buffer_descriptor.transport_endpoint_ != mem2.buffer_descriptor.transport_endpoint_) {
+                LOG(ERROR) << "FATAL: get_descriptor() MemoryDescriptor differs! "
+                          << "size(" << mem1.buffer_descriptor.size_ << " vs " << mem2.buffer_descriptor.size_ << "), "
+                          << "addr(0x" << std::hex << mem1.buffer_descriptor.buffer_address_ 
+                          << " vs 0x" << mem2.buffer_descriptor.buffer_address_ << "), "
+                          << "endpoint(" << mem1.buffer_descriptor.transport_endpoint_ 
+                          << " vs " << mem2.buffer_descriptor.transport_endpoint_ << ")" << std::dec;
+                descriptor_match = false;
+            }
+        }
+        
+        if (!descriptor_match) {
+            LOG(ERROR) << "This replica's get_descriptor() is NON-DETERMINISTIC! Cannot use struct_pack.";
+        }
     }
     
     // NOTE: Lease information is NOT serialized because:

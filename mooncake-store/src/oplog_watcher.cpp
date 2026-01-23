@@ -419,9 +419,23 @@ void OpLogWatcher::HandleWatchEvent(const std::string& key, const std::string& v
 
     // Verify checksum to detect data corruption or tampering.
     if (!OpLogManager::VerifyChecksum(entry)) {
+        uint32_t computed_checksum = OpLogManager::ComputeChecksum(entry.payload);
         LOG(ERROR) << "OpLog entry checksum mismatch: sequence_id=" << entry.sequence_id
                    << ", key=" << entry.object_key
+                   << ", expected_checksum=0x" << std::hex << entry.checksum
+                   << ", computed_checksum=0x" << computed_checksum << std::dec
+                   << ", payload_size=" << entry.payload.size()
                    << ". Possible data corruption or tampering. Discarding entry.";
+        
+        // Print payload hex for debugging
+        std::stringstream hex_ss;
+        hex_ss << std::hex << std::setfill('0');
+        size_t print_limit = std::min(entry.payload.size(), size_t(128));
+        for (size_t i = 0; i < print_limit; ++i) {
+            hex_ss << std::setw(2) << (int)(unsigned char)entry.payload[i] << " ";
+        }
+        LOG(ERROR) << "OpLog entry payload hex (first " << print_limit << " bytes): " << hex_ss.str();
+        
         consecutive_errors_.fetch_add(1);
         HAMetricManager::instance().inc_oplog_checksum_failures();
         return;
