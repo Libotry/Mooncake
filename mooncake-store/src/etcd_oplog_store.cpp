@@ -539,8 +539,26 @@ std::string EtcdOpLogStore::SerializeOpLogEntry(
     root["timestamp_ms"] = static_cast<Json::UInt64>(entry.timestamp_ms);
     root["op_type"] = static_cast<int>(entry.op_type);
     root["object_key"] = entry.object_key;
+    
     // CRITICAL: Base64 encode binary payload to prevent UTF-8 corruption in JSON
-    root["payload"] = Base64Encode(entry.payload);
+    std::string encoded_payload = Base64Encode(entry.payload);
+    root["payload"] = encoded_payload;
+    
+    // Debug logging
+    LOG(INFO) << "[SerializeOpLogEntry] seq=" << entry.sequence_id
+              << ", payload_size=" << entry.payload.size()
+              << ", encoded_size=" << encoded_payload.size()
+              << ", payload_hex(first16)=" 
+              << [&]() {
+                  std::ostringstream hex;
+                  for (size_t i = 0; i < std::min(size_t(16), entry.payload.size()); ++i) {
+                      hex << std::hex << std::setw(2) << std::setfill('0')
+                          << static_cast<int>(static_cast<unsigned char>(entry.payload[i])) << " ";
+                  }
+                  return hex.str();
+              }()
+              << ", encoded(first50)=" << encoded_payload.substr(0, 50);
+    
     root["checksum"] = static_cast<Json::UInt>(entry.checksum);
     root["prefix_hash"] = static_cast<Json::UInt>(entry.prefix_hash);
 
@@ -570,8 +588,26 @@ bool EtcdOpLogStore::DeserializeOpLogEntry(const std::string& json_str,
         entry.timestamp_ms = root["timestamp_ms"].asUInt64();
         entry.op_type = static_cast<OpType>(root["op_type"].asInt());
         entry.object_key = root["object_key"].asString();
+        
         // CRITICAL: Base64 decode payload to restore binary data
-        entry.payload = Base64Decode(root["payload"].asString());
+        std::string encoded_payload = root["payload"].asString();
+        entry.payload = Base64Decode(encoded_payload);
+        
+        // Debug logging
+        LOG(INFO) << "[DeserializeOpLogEntry] seq=" << entry.sequence_id
+                  << ", encoded_size=" << encoded_payload.size()
+                  << ", decoded_size=" << entry.payload.size()
+                  << ", encoded(first50)=" << encoded_payload.substr(0, 50)
+                  << ", decoded_hex(first16)=" 
+                  << [&]() {
+                      std::ostringstream hex;
+                      for (size_t i = 0; i < std::min(size_t(16), entry.payload.size()); ++i) {
+                          hex << std::hex << std::setw(2) << std::setfill('0')
+                              << static_cast<int>(static_cast<unsigned char>(entry.payload[i])) << " ";
+                      }
+                      return hex.str();
+                  }();
+        
         entry.checksum = root["checksum"].asUInt();
         entry.prefix_hash = root["prefix_hash"].asUInt();
     } catch (const std::exception& e) {
