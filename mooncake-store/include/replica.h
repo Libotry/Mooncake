@@ -130,16 +130,63 @@ struct DiskDescriptor {
     YLT_REFL(DiskDescriptor, file_path, object_size);
 };
 
-struct LocalDiskDescriptor {
-    UUID client_id;
-    uint64_t object_size = 0;
+// Wire-format for JSON serialization/deserialization.
+// Keeps schema stable with split UUID fields.
+struct LocalDiskDescriptorWire {
+    uint64_t client_id_first{0};   // UUID.first
+    uint64_t client_id_second{0};  // UUID.second
+    uint64_t object_size{0};
     std::string transport_endpoint;
+
+    LocalDiskDescriptorWire() = default;
+    LocalDiskDescriptorWire(UUID client_id, uint64_t object_size,
+                            const std::string& transport_endpoint)
+        : client_id_first(client_id.first),
+          client_id_second(client_id.second),
+          object_size(object_size),
+          transport_endpoint(transport_endpoint) {}
+
+    UUID GetClientId() const { return {client_id_first, client_id_second}; }
+
+    YLT_REFL(LocalDiskDescriptorWire, client_id_first, client_id_second,
+             object_size, transport_endpoint);
+};
+
+struct LocalDiskDescriptor {
+    UUID client_id{0, 0};
+    uint64_t object_size{0};
+    std::string transport_endpoint;
+    
+    // Constructor from UUID for convenience
+    LocalDiskDescriptor() = default;
+    LocalDiskDescriptor(UUID client_id, uint64_t object_size, const std::string& transport_endpoint)
+        : client_id(client_id),
+          object_size(object_size),
+          transport_endpoint(transport_endpoint) {}
+    
+    // Get UUID (for backward compatibility)
+    UUID GetClientId() const { return client_id; }
+
+    LocalDiskDescriptorWire ToWire() const {
+        return LocalDiskDescriptorWire(client_id, object_size,
+                                       transport_endpoint);
+    }
+
+    static LocalDiskDescriptor FromWire(const LocalDiskDescriptorWire& wire) {
+        return LocalDiskDescriptor(wire.GetClientId(), wire.object_size,
+                                   wire.transport_endpoint);
+    }
+    
+    // NOTE: Internal format uses UUID directly.
+    // If serialized directly (e.g., debug logging), it will use the UUID
+    // representation, not the split-field wire schema.
     YLT_REFL(LocalDiskDescriptor, client_id, object_size, transport_endpoint);
 };
 
 class Replica {
    public:
     struct Descriptor;
+    struct DescriptorWire;
 
     // memory replica constructor
     Replica(std::unique_ptr<AllocatedBuffer> buffer, ReplicaStatus status)
@@ -271,6 +318,9 @@ class Replica {
         ReplicaStatus status;
         YLT_REFL(Descriptor, descriptor_variant, status);
 
+        DescriptorWire ToWire() const;
+        static Descriptor FromWire(const DescriptorWire& wire);
+
         // Helper functions
         bool is_memory_replica() noexcept {
             return std::holds_alternative<MemoryDescriptor>(descriptor_variant);
@@ -345,6 +395,15 @@ class Replica {
         }
     };
 
+    // Wire-format descriptor for JSON serialization/deserialization.
+    // Keeps schema stable (e.g., LocalDiskDescriptorWire uses split UUID).
+    struct DescriptorWire {
+        std::variant<MemoryDescriptor, DiskDescriptor, LocalDiskDescriptorWire>
+            descriptor_variant;
+        ReplicaStatus status;
+        YLT_REFL(DescriptorWire, descriptor_variant, status);
+    };
+
    private:
     std::variant<MemoryReplicaData, DiskReplicaData, LocalDiskReplicaData>
         data_;
@@ -375,14 +434,44 @@ inline Replica::Descriptor Replica::get_descriptor() const {
         desc.descriptor_variant = std::move(disk_desc);
     } else if (is_local_disk_replica()) {
         const auto& disk_data = std::get<LocalDiskReplicaData>(data_);
-        LocalDiskDescriptor local_disk_desc;
-        local_disk_desc.client_id = disk_data.client_id;
-        local_disk_desc.object_size = disk_data.object_size;
-        local_disk_desc.transport_endpoint = disk_data.transport_endpoint;
+        LocalDiskDescriptor local_disk_desc(disk_data.client_id, 
+                                            disk_data.object_size,
+                                            disk_data.transport_endpoint);
         desc.descriptor_variant = std::move(local_disk_desc);
     }
 
     return desc;
+}
+
+inline Replica::DescriptorWire Replica::Descriptor::ToWire() const {
+    Replica::DescriptorWire out;
+    out.status = status;
+    if (std::holds_alternative<MemoryDescriptor>(descriptor_variant)) {
+        out.descriptor_variant = std::get<MemoryDescriptor>(descriptor_variant);
+    } else if (std::holds_alternative<DiskDescriptor>(descriptor_variant)) {
+        out.descriptor_variant = std::get<DiskDescriptor>(descriptor_variant);
+    } else {
+        const auto& ld = std::get<LocalDiskDescriptor>(descriptor_variant);
+        out.descriptor_variant = ld.ToWire();
+    }
+    return out;
+}
+
+inline Replica::Descriptor Replica::Descriptor::FromWire(
+    const Replica::DescriptorWire& wire) {
+    Replica::Descriptor out;
+    out.status = wire.status;
+    if (std::holds_alternative<MemoryDescriptor>(wire.descriptor_variant)) {
+        out.descriptor_variant =
+            std::get<MemoryDescriptor>(wire.descriptor_variant);
+    } else if (std::holds_alternative<DiskDescriptor>(wire.descriptor_variant)) {
+        out.descriptor_variant = std::get<DiskDescriptor>(wire.descriptor_variant);
+    } else {
+        const auto& ld =
+            std::get<LocalDiskDescriptorWire>(wire.descriptor_variant);
+        out.descriptor_variant = LocalDiskDescriptor::FromWire(ld);
+    }
+    return out;
 }
 
 inline std::vector<std::optional<std::string>> Replica::get_segment_names()
