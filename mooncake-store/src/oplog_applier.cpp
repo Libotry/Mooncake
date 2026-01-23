@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
 
 #include "etcd_oplog_store.h"
 #include "ha_metric_manager.h"
@@ -461,6 +463,15 @@ void OpLogApplier::ApplyPutEnd(const OpLogEntry& entry) {
                    << ", sequence_id=" << entry.sequence_id
                    << ", payload_size=" << entry.payload.size()
                    << ", error_code=" << static_cast<int>(result);
+        
+        // Debug: print payload hex for inspection
+        std::stringstream hex_ss;
+        hex_ss << std::hex << std::setfill('0');
+        size_t print_limit = std::min(entry.payload.size(), size_t(128));
+        for (size_t i = 0; i < print_limit; ++i) {
+            hex_ss << std::setw(2) << (int)(unsigned char)entry.payload[i] << " ";
+        }
+        LOG(ERROR) << "OpLogApplier: payload hex (first " << print_limit << " bytes): " << hex_ss.str();
     }
     
     if (!parse_success) {
