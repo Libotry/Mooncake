@@ -7,6 +7,7 @@
 #include <string>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Slab.h"
@@ -133,6 +134,10 @@ using EtcdLeaseId = int64_t;
 #endif
 
 using UUID = std::pair<uint64_t, uint64_t>;
+
+// Enable YLT (struct_json / coro_rpc) serialization for UUID.
+// UUID is an alias of std::pair<uint64_t, uint64_t>, so we reflect the pair fields.
+YLT_REFL(UUID, first, second);
 
 using SerializedByte = uint8_t;  // Used as basic unit of serialized data
 static_assert(sizeof(SerializedByte) == 1,
