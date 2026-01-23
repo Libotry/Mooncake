@@ -433,17 +433,20 @@ namespace {
 // Base64 encoding for binary payload
 // JsonCpp treats strings as UTF-8, so we must encode binary data
 std::string Base64Encode(const std::string& data) {
-    static const char* base64_chars = 
+    static const char base64_chars[] = 
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     
     std::string result;
     result.reserve(((data.size() + 2) / 3) * 4);
     
     size_t i = 0;
-    while (i < data.size()) {
-        uint32_t octet_a = i < data.size() ? (unsigned char)data[i++] : 0;
-        uint32_t octet_b = i < data.size() ? (unsigned char)data[i++] : 0;
-        uint32_t octet_c = i < data.size() ? (unsigned char)data[i++] : 0;
+    size_t data_len = data.size();
+    
+    // Process 3 bytes at a time
+    while (i + 2 < data_len) {
+        uint32_t octet_a = static_cast<unsigned char>(data[i++]);
+        uint32_t octet_b = static_cast<unsigned char>(data[i++]);
+        uint32_t octet_c = static_cast<unsigned char>(data[i++]);
         
         uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
         
@@ -453,17 +456,26 @@ std::string Base64Encode(const std::string& data) {
         result.push_back(base64_chars[triple & 0x3F]);
     }
     
-    // Add padding
-    size_t padding = (3 - (data.size() % 3)) % 3;
-    for (size_t j = 0; j < padding; j++) {
-        result[result.size() - 1 - j] = '=';
+    // Handle remaining bytes
+    size_t remaining = data_len - i;
+    if (remaining > 0) {
+        uint32_t octet_a = static_cast<unsigned char>(data[i++]);
+        uint32_t octet_b = (remaining > 1) ? static_cast<unsigned char>(data[i++]) : 0;
+        uint32_t octet_c = 0;
+        
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+        
+        result.push_back(base64_chars[(triple >> 18) & 0x3F]);
+        result.push_back(base64_chars[(triple >> 12) & 0x3F]);
+        result.push_back((remaining > 1) ? base64_chars[(triple >> 6) & 0x3F] : '=');
+        result.push_back('=');
     }
     
     return result;
 }
 
 std::string Base64Decode(const std::string& encoded) {
-    static const unsigned char base64_decode_table[256] = {
+    static const unsigned char decode_table[256] = {
         64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
         64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
         64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
@@ -487,18 +499,32 @@ std::string Base64Decode(const std::string& encoded) {
     
     size_t i = 0;
     while (i < encoded.size()) {
-        uint32_t sextet_a = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
-        uint32_t sextet_b = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
-        uint32_t sextet_c = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
-        uint32_t sextet_d = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
+        // Skip whitespace and invalid chars
+        while (i < encoded.size() && (encoded[i] == ' ' || encoded[i] == '\n' || encoded[i] == '\r' || encoded[i] == '\t')) {
+            i++;
+        }
+        if (i >= encoded.size()) break;
         
-        if (sextet_a == 64 || sextet_b == 64) break;
+        uint32_t sextet_a = decode_table[static_cast<unsigned char>(encoded[i++])];
+        if (i >= encoded.size() || sextet_a == 64) break;
         
-        uint32_t triple = (sextet_a << 18) | (sextet_b << 12) | (sextet_c << 6) | sextet_d;
+        uint32_t sextet_b = decode_table[static_cast<unsigned char>(encoded[i++])];
+        if (sextet_b == 64) break;
         
-        result.push_back((triple >> 16) & 0xFF);
-        if (sextet_c != 64) result.push_back((triple >> 8) & 0xFF);
-        if (sextet_d != 64) result.push_back(triple & 0xFF);
+        uint32_t sextet_c = (i < encoded.size()) ? decode_table[static_cast<unsigned char>(encoded[i++])] : 64;
+        uint32_t sextet_d = (i < encoded.size()) ? decode_table[static_cast<unsigned char>(encoded[i++])] : 64;
+        
+        uint32_t triple = (sextet_a << 18) | (sextet_b << 12) | 
+                         ((sextet_c != 64) ? (sextet_c << 6) : 0) | 
+                         ((sextet_d != 64) ? sextet_d : 0);
+        
+        result.push_back(static_cast<char>((triple >> 16) & 0xFF));
+        if (sextet_c != 64) {
+            result.push_back(static_cast<char>((triple >> 8) & 0xFF));
+        }
+        if (sextet_d != 64) {
+            result.push_back(static_cast<char>(triple & 0xFF));
+        }
     }
     
     return result;
