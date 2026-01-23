@@ -7,8 +7,6 @@
 
 #include "replica.h"
 #include "types.h"
-#include "ylt/struct_json/json_reader.h"
-#include "ylt/struct_json/json_writer.h"
 
 namespace mooncake {
 
@@ -34,23 +32,22 @@ struct StandbyObjectMetadata {
 };
 
 /**
- * @brief Payload structure for JSON serialization/deserialization
+ * @brief Payload structure for struct_pack serialization (msgpack binary format)
  * 
- * Uses separate fields for UUID to keep JSON schema stable/explicit.
+ * Now uses UUID directly since struct_pack natively supports std::pair.
  */
 struct MetadataPayload {
-    uint64_t client_id_first{0};   // UUID.first
-    uint64_t client_id_second{0};  // UUID.second
+    UUID client_id{0, 0};
     uint64_t size{0};
     std::vector<Replica::Descriptor> replicas;
     // NOTE: Lease information removed - not needed by Standby
     
-    YLT_REFL(MetadataPayload, client_id_first, client_id_second, size, replicas);
+    YLT_REFL(MetadataPayload, client_id, size, replicas);
     
     // Convert to StandbyObjectMetadata
     StandbyObjectMetadata ToStandbyMetadata(uint64_t sequence_id) const {
         StandbyObjectMetadata meta;
-        meta.client_id = {client_id_first, client_id_second};
+        meta.client_id = client_id;
         meta.size = size;
         meta.replicas = replicas;
         meta.last_sequence_id = sequence_id;

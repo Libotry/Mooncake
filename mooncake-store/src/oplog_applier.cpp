@@ -1,7 +1,7 @@
 #include "oplog_applier.h"
 
 #include <glog/logging.h>
-#include <ylt/struct_json/json_reader.h>
+
 
 #include <algorithm>
 #include <chrono>
@@ -450,20 +450,17 @@ void OpLogApplier::ApplyPutEnd(const OpLogEntry& entry) {
         return;
     }
     
-    // Deserialize payload to MetadataPayload
+    // Deserialize payload using struct_pack (msgpack binary format)
     MetadataPayload payload;
     bool parse_success = false;
-    try {
-        struct_json::from_json(payload, entry.payload);
+    auto result = struct_pack::deserialize_to(payload, entry.payload);
+    if (result) {
         parse_success = true;
-    } catch (const std::exception& e) {
-        const std::string prefix =
-            entry.payload.size() > 256 ? entry.payload.substr(0, 256) : entry.payload;
-        LOG(ERROR) << "OpLogApplier: failed to parse payload for key=" << entry.object_key
+    } else {
+        LOG(ERROR) << "OpLogApplier: failed to deserialize payload for key=" << entry.object_key
                    << ", sequence_id=" << entry.sequence_id
                    << ", payload_size=" << entry.payload.size()
-                   << ", payload_prefix(256)=" << prefix
-                   << ", error=" << e.what();
+                   << ", error_code=" << static_cast<int>(result.error());
     }
     
     if (!parse_success) {

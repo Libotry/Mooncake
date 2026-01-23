@@ -11,14 +11,7 @@
 #include <vector>
 
 #include "Slab.h"
-#include "ylt/struct_json/json_reader.h"
-#include "ylt/struct_json/json_writer.h"
-
-// Enable YLT (struct_json / coro_rpc) serialization for std::pair<uint64_t, uint64_t>.
-// NOTE: We specialize the canonical std::pair type (not the UUID alias), because
-// the reflection machinery may canonicalize typedefs/aliases back to std::pair.
-using UUIDPair = std::pair<uint64_t, uint64_t>;
-YLT_REFL(UUIDPair, first, second);
+#include "ylt/struct_pack.hpp"
 
 #ifdef STORE_USE_ETCD
 #include "libetcd_wrapper.h"
@@ -139,7 +132,7 @@ using ViewVersionId = int64_t;
 using EtcdLeaseId = int64_t;
 #endif
 
-using UUID = UUIDPair;
+using UUID = std::pair<uint64_t, uint64_t>;
 
 using SerializedByte = uint8_t;  // Used as basic unit of serialized data
 static_assert(sizeof(SerializedByte) == 1,

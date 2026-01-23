@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <shared_mutex>
 #include <ylt/util/tl/expected.hpp>
-#include <ylt/struct_json/json_writer.h>
+
 
 #include "allocator.h"
 #include "etcd_helper.h"
@@ -80,8 +80,7 @@ MasterService::MasterService() : MasterService(MasterServiceConfig()) {}
 
 std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metadata) const {
     MetadataPayload payload;
-    payload.client_id_first = metadata.client_id.first;
-    payload.client_id_second = metadata.client_id.second;
+    payload.client_id = metadata.client_id;
     payload.size = metadata.size;
     
     // Extract replica descriptors
@@ -94,17 +93,15 @@ std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metad
     // 1. Standby does not perform eviction, so lease info is not used
     // 2. After promotion, new Primary should grant fresh leases, not restore old ones
     
-    // Serialize to JSON
-    std::string json_str;
-    struct_json::to_json(payload, json_str);
-    return json_str;
+    // Serialize using struct_pack (msgpack binary format)
+    auto result = struct_pack::serialize(payload);
+    return std::string(result.begin(), result.end());
 }
 
 std::string MasterService::SerializeMetadataForOpLogWithoutMemReplicas(
     const ObjectMetadata& metadata) const {
     MetadataPayload payload;
-    payload.client_id_first = metadata.client_id.first;
-    payload.client_id_second = metadata.client_id.second;
+    payload.client_id = metadata.client_id;
     payload.size = metadata.size;
 
     payload.replicas.reserve(metadata.replicas.size());
@@ -115,22 +112,19 @@ std::string MasterService::SerializeMetadataForOpLogWithoutMemReplicas(
         payload.replicas.push_back(replica.get_descriptor());
     }
 
-    std::string json_str;
-    struct_json::to_json(payload, json_str);
-    return json_str;
+    auto result = struct_pack::serialize(payload);
+    return std::string(result.begin(), result.end());
 }
 
 std::string MasterService::SerializeMetadataForOpLogFromReplicaDescriptors(
     const UUID& client_id, uint64_t size,
     const std::vector<Replica::Descriptor>& replicas) const {
     MetadataPayload payload;
-    payload.client_id_first = client_id.first;
-    payload.client_id_second = client_id.second;
+    payload.client_id = client_id;
     payload.size = size;
     payload.replicas = replicas;
-    std::string json_str;
-    struct_json::to_json(payload, json_str);
-    return json_str;
+    auto result = struct_pack::serialize(payload);
+    return std::string(result.begin(), result.end());
 }
 
 MasterService::MasterService(const MasterServiceConfig& config)
