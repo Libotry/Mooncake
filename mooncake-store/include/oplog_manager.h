@@ -102,10 +102,6 @@ class OpLogManager {
     // Returns true if checksum matches, false otherwise.
     // This is public so OpLogWatcher and OpLogApplier can validate entries.
     static bool VerifyChecksum(const OpLogEntry& entry);
-    
-    // Compute checksum for a payload.
-    // Made public for diagnostic logging purposes.
-    static uint32_t ComputeChecksum(const std::string& data);
 
     // Basic DoS protection for externally sourced OpLog entries (etcd watch / reads).
     // Enforce conservative bounds on key/payload sizes before parsing/applying.
@@ -119,6 +115,7 @@ class OpLogManager {
 
    private:
     static uint64_t NowMs();
+    static uint32_t ComputeChecksum(const std::string& data);
     static uint32_t ComputePrefixHash(const std::string& key);
 
     mutable std::shared_mutex mutex_;
