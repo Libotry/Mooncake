@@ -2,9 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
-#include <iomanip>
 #include <regex>
-#include <sstream>
 #include <unordered_set>
 #include <shared_mutex>
 #include <ylt/util/tl/expected.hpp>
@@ -107,22 +105,7 @@ std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metad
     
     // Serialize using struct_pack (msgpack binary format)
     auto result = struct_pack::serialize(payload);
-    std::string serialized(result.begin(), result.end());
-    
-    // Debug: log serialization details
-    std::stringstream hex_ss;
-    hex_ss << std::hex << std::setfill('0');
-    size_t print_limit = std::min(serialized.size(), size_t(128));
-    for (size_t i = 0; i < print_limit; ++i) {
-        hex_ss << std::setw(2) << (int)(unsigned char)serialized[i] << " ";
-    }
-    LOG(INFO) << "SerializeMetadataForOpLog: client_id=" << payload.client_id
-              << ", size=" << payload.size
-              << ", replicas=" << payload.replicas.size()
-              << ", serialized_size=" << serialized.size()
-              << ", hex(first " << print_limit << " bytes): " << hex_ss.str();
-    
-    return serialized;
+    return std::string(result.begin(), result.end());
 }
 
 std::string MasterService::SerializeMetadataForOpLogWithoutMemReplicas(
