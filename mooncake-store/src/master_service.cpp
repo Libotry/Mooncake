@@ -95,9 +95,36 @@ std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metad
     // 1. Standby does not perform eviction, so lease info is not used
     // 2. After promotion, new Primary should grant fresh leases, not restore old ones
     
+    // Debug: log payload content before serialization
+    LOG(INFO) << "SerializeMetadataForOpLog BEFORE serialize: client_id=" << payload.client_id
+              << ", size=" << payload.size
+              << ", replicas_count=" << payload.replicas.size();
+    for (size_t i = 0; i < payload.replicas.size(); ++i) {
+        const auto& desc = payload.replicas[i];
+        LOG(INFO) << "  replica[" << i << "]: status=" << static_cast<int>(desc.status)
+                  << ", variant_index=" << desc.descriptor_variant.index();
+    }
+    
     // Serialize using struct_pack (msgpack binary format)
     auto result = struct_pack::serialize(payload);
     std::string serialized(result.begin(), result.end());
+    
+    // DIAGNOSTIC: Serialize twice to check determinism
+    auto result2 = struct_pack::serialize(payload);
+    std::string serialized2(result2.begin(), result2.end());
+    if (serialized != serialized2) {
+        LOG(ERROR) << "FATAL: struct_pack serialization is NON-DETERMINISTIC! "
+                   << "size1=" << serialized.size() << ", size2=" << serialized2.size();
+        // Print diff
+        size_t min_size = std::min(serialized.size(), serialized2.size());
+        for (size_t i = 0; i < min_size; ++i) {
+            if (serialized[i] != serialized2[i]) {
+                LOG(ERROR) << "  Diff at byte " << i << ": 0x" << std::hex 
+                          << (int)(unsigned char)serialized[i] << " vs 0x"
+                          << (int)(unsigned char)serialized2[i] << std::dec;
+            }
+        }
+    }
     
     // Debug: log serialization details
     std::stringstream hex_ss;
@@ -106,10 +133,7 @@ std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metad
     for (size_t i = 0; i < print_limit; ++i) {
         hex_ss << std::setw(2) << (int)(unsigned char)serialized[i] << " ";
     }
-    LOG(INFO) << "SerializeMetadataForOpLog: client_id=" << payload.client_id
-              << ", size=" << payload.size
-              << ", replicas=" << payload.replicas.size()
-              << ", serialized_size=" << serialized.size()
+    LOG(INFO) << "SerializeMetadataForOpLog AFTER serialize: serialized_size=" << serialized.size()
               << ", hex(first " << print_limit << " bytes): " << hex_ss.str();
     
     return serialized;
