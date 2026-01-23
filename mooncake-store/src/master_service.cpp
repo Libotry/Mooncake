@@ -79,10 +79,6 @@ static Replica ReplicaFromDescriptor(
 MasterService::MasterService() : MasterService(MasterServiceConfig()) {}
 
 std::string MasterService::SerializeMetadataForOpLog(const ObjectMetadata& metadata) const {
-    // DIAGNOSTIC: Log metadata state BEFORE any serialization
-    LOG(INFO) << "SerializeMetadataForOpLog START: client_id=" << metadata.client_id
-              << ", size=" << metadata.size
-              << ", replicas_count=" << metadata.replicas.size();
     for (size_t i = 0; i < metadata.replicas.size(); ++i) {
         const auto& replica = metadata.replicas[i];
         LOG(INFO) << "  replica[" << i << "] BEFORE: type=" << static_cast<int>(replica.type())
