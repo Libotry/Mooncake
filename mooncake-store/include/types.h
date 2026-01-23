@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "Slab.h"
+#include "ylt/struct_json/json_reader.h"
+#include "ylt/struct_json/json_writer.h"
 #include "ylt/struct_pack.hpp"
 
 #ifdef STORE_USE_ETCD
