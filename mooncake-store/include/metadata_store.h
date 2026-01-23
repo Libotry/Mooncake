@@ -36,7 +36,7 @@ struct StandbyObjectMetadata {
 /**
  * @brief Payload structure for JSON serialization/deserialization
  * 
- * Uses separate fields for UUID since std::pair cannot be directly serialized.
+ * Uses separate fields for UUID to keep JSON schema stable/explicit.
  */
 struct MetadataPayload {
     uint64_t client_id_first{0};   // UUID.first
