@@ -131,21 +131,10 @@ struct DiskDescriptor {
 };
 
 struct LocalDiskDescriptor {
-    uint64_t client_id_first{0};   // UUID.first - split for JSON serialization
-    uint64_t client_id_second{0};  // UUID.second - split for JSON serialization
+    UUID client_id;
     uint64_t object_size = 0;
     std::string transport_endpoint;
-    
-    // Constructor from UUID for convenience
-    LocalDiskDescriptor() = default;
-    LocalDiskDescriptor(UUID client_id, uint64_t object_size, const std::string& transport_endpoint)
-        : client_id_first(client_id.first), client_id_second(client_id.second),
-          object_size(object_size), transport_endpoint(transport_endpoint) {}
-    
-    // Get UUID (for backward compatibility)
-    UUID GetClientId() const { return {client_id_first, client_id_second}; }
-    
-    YLT_REFL(LocalDiskDescriptor, client_id_first, client_id_second, object_size, transport_endpoint);
+    YLT_REFL(LocalDiskDescriptor, client_id, object_size, transport_endpoint);
 };
 
 class Replica {
@@ -386,9 +375,11 @@ inline Replica::Descriptor Replica::get_descriptor() const {
         desc.descriptor_variant = std::move(disk_desc);
     } else if (is_local_disk_replica()) {
         const auto& disk_data = std::get<LocalDiskReplicaData>(data_);
-        LocalDiskDescriptor local_disk_desc(disk_data.client_id, 
-                                            disk_data.object_size,
-                                            disk_data.transport_endpoint);
+        LocalDiskDescriptor local_disk_desc{
+            disk_data.client_id,
+            disk_data.object_size,
+            disk_data.transport_endpoint,
+        };
         desc.descriptor_variant = std::move(local_disk_desc);
     }
 

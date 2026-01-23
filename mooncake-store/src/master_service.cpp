@@ -71,8 +71,7 @@ static Replica ReplicaFromDescriptor(
         return Replica(disk.file_path, disk.object_size, desc.status);
     }
     const auto& ld = desc.get_local_disk_descriptor();
-    UUID client_id{ld.client_id_first, ld.client_id_second};
-    return Replica(client_id, ld.object_size, ld.transport_endpoint, desc.status);
+    return Replica(ld.client_id, ld.object_size, ld.transport_endpoint, desc.status);
 }
 
 }  // namespace
