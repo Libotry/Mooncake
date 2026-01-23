@@ -428,6 +428,84 @@ std::string EtcdOpLogStore::BuildSnapshotKey(
     return oss.str();
 }
 
+namespace {
+
+// Base64 encoding for binary payload
+// JsonCpp treats strings as UTF-8, so we must encode binary data
+std::string Base64Encode(const std::string& data) {
+    static const char* base64_chars = 
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    
+    std::string result;
+    result.reserve(((data.size() + 2) / 3) * 4);
+    
+    size_t i = 0;
+    while (i < data.size()) {
+        uint32_t octet_a = i < data.size() ? (unsigned char)data[i++] : 0;
+        uint32_t octet_b = i < data.size() ? (unsigned char)data[i++] : 0;
+        uint32_t octet_c = i < data.size() ? (unsigned char)data[i++] : 0;
+        
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+        
+        result.push_back(base64_chars[(triple >> 18) & 0x3F]);
+        result.push_back(base64_chars[(triple >> 12) & 0x3F]);
+        result.push_back(base64_chars[(triple >> 6) & 0x3F]);
+        result.push_back(base64_chars[triple & 0x3F]);
+    }
+    
+    // Add padding
+    size_t padding = (3 - (data.size() % 3)) % 3;
+    for (size_t j = 0; j < padding; j++) {
+        result[result.size() - 1 - j] = '=';
+    }
+    
+    return result;
+}
+
+std::string Base64Decode(const std::string& encoded) {
+    static const unsigned char base64_decode_table[256] = {
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+        52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+        64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+        15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+        64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64
+    };
+    
+    std::string result;
+    result.reserve((encoded.size() * 3) / 4);
+    
+    size_t i = 0;
+    while (i < encoded.size()) {
+        uint32_t sextet_a = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
+        uint32_t sextet_b = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
+        uint32_t sextet_c = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
+        uint32_t sextet_d = i < encoded.size() ? base64_decode_table[(unsigned char)encoded[i++]] : 0;
+        
+        if (sextet_a == 64 || sextet_b == 64) break;
+        
+        uint32_t triple = (sextet_a << 18) | (sextet_b << 12) | (sextet_c << 6) | sextet_d;
+        
+        result.push_back((triple >> 16) & 0xFF);
+        if (sextet_c != 64) result.push_back((triple >> 8) & 0xFF);
+        if (sextet_d != 64) result.push_back(triple & 0xFF);
+    }
+    
+    return result;
+}
+
+}  // namespace
+
 std::string EtcdOpLogStore::SerializeOpLogEntry(
     const OpLogEntry& entry) const {
     Json::Value root;
@@ -435,7 +513,8 @@ std::string EtcdOpLogStore::SerializeOpLogEntry(
     root["timestamp_ms"] = static_cast<Json::UInt64>(entry.timestamp_ms);
     root["op_type"] = static_cast<int>(entry.op_type);
     root["object_key"] = entry.object_key;
-    root["payload"] = entry.payload;
+    // CRITICAL: Base64 encode binary payload to prevent UTF-8 corruption in JSON
+    root["payload"] = Base64Encode(entry.payload);
     root["checksum"] = static_cast<Json::UInt>(entry.checksum);
     root["prefix_hash"] = static_cast<Json::UInt>(entry.prefix_hash);
 
@@ -465,7 +544,8 @@ bool EtcdOpLogStore::DeserializeOpLogEntry(const std::string& json_str,
         entry.timestamp_ms = root["timestamp_ms"].asUInt64();
         entry.op_type = static_cast<OpType>(root["op_type"].asInt());
         entry.object_key = root["object_key"].asString();
-        entry.payload = root["payload"].asString();
+        // CRITICAL: Base64 decode payload to restore binary data
+        entry.payload = Base64Decode(root["payload"].asString());
         entry.checksum = root["checksum"].asUInt();
         entry.prefix_hash = root["prefix_hash"].asUInt();
     } catch (const std::exception& e) {

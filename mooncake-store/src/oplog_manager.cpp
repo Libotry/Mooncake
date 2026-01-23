@@ -27,6 +27,12 @@ uint64_t OpLogManager::Append(OpType type, const std::string& key,
     entry.checksum = ComputeChecksum(entry.payload);
     entry.prefix_hash = ComputePrefixHash(entry.object_key);
 
+    // DIAGNOSTIC: Log checksum calculation
+    LOG(INFO) << "OpLogManager::Append: key=" << key
+              << ", op_type=" << static_cast<int>(type)
+              << ", payload_size=" << payload.size()
+              << ", checksum=0x" << std::hex << entry.checksum << std::dec;
+
     std::unique_lock<std::shared_mutex> lock(mutex_);
     entry.sequence_id = ++last_seq_id_;
 
