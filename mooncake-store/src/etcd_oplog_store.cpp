@@ -137,9 +137,15 @@ ErrorCode EtcdOpLogStore::WriteOpLog(const OpLogEntry& entry, bool sync) {
         if (sync) {
             // Wait for persistence
             uint64_t target_seq = entry.sequence_id;
-            cv_sync_completed_.wait(lock, [&] {
-                return last_persisted_seq_id_.load() >= target_seq;
-            });
+            bool success = cv_sync_completed_.wait_for(
+                lock, std::chrono::milliseconds(kSyncWaitTimeoutMs), [&] {
+                    return last_persisted_seq_id_.load() >= target_seq;
+                });
+            if (!success) {
+                LOG(ERROR) << "Timeout waiting for OpLog persistence, seq="
+                           << target_seq;
+                return ErrorCode::ETCD_OPERATION_ERROR;
+            }
         }
     }
 
@@ -209,7 +215,18 @@ void EtcdOpLogStore::FlushBatch() {
     }
 
     // Perform Batch IO
-    ErrorCode err = EtcdHelper::BatchCreate(keys, values);
+    ErrorCode err = ErrorCode::OK;
+    for (int i = 0; i <= kFlushRetryCount; ++i) {
+        err = EtcdHelper::BatchCreate(keys, values);
+        if (err == ErrorCode::OK) {
+            break;
+        }
+        if (i < kFlushRetryCount) {
+             LOG(WARNING) << "Failed to flush OpLog batch (attempt " << i + 1 
+                          << "/" << kFlushRetryCount + 1 << "), retrying...";
+             std::this_thread::sleep_for(std::chrono::milliseconds(kFlushRetryIntervalMs));
+        }
+    }
 
     // Re-lock to update state
     batch_mutex_.lock();
@@ -220,7 +237,6 @@ void EtcdOpLogStore::FlushBatch() {
         }
     } else {
         LOG(ERROR) << "Failed to flush OpLog batch, count=" << batch_to_write.size();
-        // Potential improvement: retry logic or separate handling
     }
 
     // Wake up all waiting threads (Strategy 2+: DELETE waiters)

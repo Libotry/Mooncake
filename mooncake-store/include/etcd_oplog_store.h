@@ -223,6 +223,9 @@ class EtcdOpLogStore {
     static constexpr size_t kOpLogBatchSizeLimit = 1 * 1024 * 1024; // 1MB payload limit (soft)
     static constexpr size_t kOpLogBatchCountLimit = 100;            // 100 entries
     static constexpr int kOpLogBatchTimeoutMs = 10;                 // 10ms max latency for Async
+    static constexpr int kSyncWaitTimeoutMs = 3000;                 // 3s timeout for Sync writes
+    static constexpr int kFlushRetryCount = 3;                      // Retries for failed flush
+    static constexpr int kFlushRetryIntervalMs = 50;                // Retry interval
 };
 
 }  // namespace mooncake
