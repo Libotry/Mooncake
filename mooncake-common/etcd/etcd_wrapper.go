@@ -533,6 +533,49 @@ func EtcdStoreCreateWrapper(key *C.char, keySize C.int, value *C.char, valueSize
 	return -2
 }
 
+//export EtcdStoreBatchCreateWrapper
+func EtcdStoreBatchCreateWrapper(keys **C.char, values **C.char, count C.int, errMsg **C.char) int {
+	if storeClient == nil {
+		*errMsg = C.CString("etcd client not initialized")
+		return -1
+	}
+
+	n := int(count)
+	if n == 0 {
+		return 0
+	}
+
+	// Unsafe casting to access C arrays as Go slices
+	keyPtrs := (*[1 << 28]*C.char)(unsafe.Pointer(keys))[:n:n]
+	valPtrs := (*[1 << 28]*C.char)(unsafe.Pointer(values))[:n:n]
+
+	ops := make([]clientv3.Op, 0, n)
+	cmps := make([]clientv3.Cmp, 0, n)
+	for i := 0; i < n; i++ {
+		k := C.GoString(keyPtrs[i])
+		v := C.GoString(valPtrs[i])
+		ops = append(ops, clientv3.OpPut(k, v))
+		// Ensure none of the keys exist
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(k), "=", 0))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Use Txn to ensure atomicity of the batch
+	resp, err := storeClient.Txn(ctx).If(cmps...).Then(ops...).Commit()
+	if err != nil {
+		*errMsg = C.CString(err.Error())
+		return -1
+	}
+
+	if !resp.Succeeded {
+		*errMsg = C.CString("transaction failed: one or more keys already exist")
+		return -2
+	}
+	return 0
+}
+
 //export EtcdStoreGetWithPrefixWrapper
 func EtcdStoreGetWithPrefixWrapper(prefix *C.char, prefixSize C.int, keys **C.char, keySizes **C.int, values **C.char, valueSizes **C.int, count *C.int, errMsg **C.char) int {
 	if storeClient == nil {
