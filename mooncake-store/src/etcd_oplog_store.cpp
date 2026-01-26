@@ -73,9 +73,28 @@ EtcdOpLogStore::EtcdOpLogStore(const std::string& cluster_id,
         batch_update_thread_ =
             std::thread(&EtcdOpLogStore::BatchUpdateThread, this);
     }
+
+    // Start OpLog batch write thread
+    batch_write_running_.store(true);
+    batch_write_thread_ = std::thread(&EtcdOpLogStore::BatchWriteThread, this);
 }
 
 EtcdOpLogStore::~EtcdOpLogStore() {
+    // Stop OpLog batch write thread
+    batch_write_running_.store(false);
+    cv_batch_updated_.notify_all();
+    if (batch_write_thread_.joinable()) {
+        batch_write_thread_.join();
+    }
+
+    // Attempt final flush
+    {
+        std::lock_guard<std::mutex> lock(batch_mutex_);
+        if (!pending_batch_.empty()) {
+            FlushBatch();
+        }
+    }
+
     if (!enable_latest_seq_batch_update_) {
         return;
     }
@@ -92,39 +111,48 @@ EtcdOpLogStore::~EtcdOpLogStore() {
     }
 }
 
-ErrorCode EtcdOpLogStore::WriteOpLog(const OpLogEntry& entry) {
+ErrorCode EtcdOpLogStore::WriteOpLog(const OpLogEntry& entry, bool sync) {
     std::string key = BuildOpLogKey(entry.sequence_id);
     std::string value = SerializeOpLogEntry(entry);
 
-    // Fence: never overwrite an existing OpLog key.
-    // - If this is a retry of the same entry: key exists with same value => OK.
-    // - If key exists with different value: conflict => error (signals seq regression / bug).
-    ErrorCode err = EtcdHelper::Create(key.c_str(), key.size(), value.c_str(), value.size());
-    if (err == ErrorCode::ETCD_TRANSACTION_FAIL) {
-        std::string existing;
-        EtcdRevisionId rev = 0;
-        ErrorCode get_err = EtcdHelper::Get(key.c_str(), key.size(), existing, rev);
-        if (get_err == ErrorCode::OK && existing == value) {
-            // Idempotent retry.
-            err = ErrorCode::OK;
+    {
+        std::unique_lock<std::mutex> lock(batch_mutex_);
+        pending_batch_.push_back({std::move(key), std::move(value), entry.sequence_id});
+
+        bool should_notify = false;
+        if (sync) {
+            // Strategy 2+: Sync writes (DELETE) trigger immediate flush
+            should_notify = true;
         } else {
-            LOG(ERROR) << "OpLog key conflict: seq=" << entry.sequence_id
-                       << ", get_err=" << get_err;
-            return ErrorCode::ETCD_OPERATION_ERROR;
+            // Async writes (PUT_END): trigger if threshold reached
+            if (pending_batch_.size() >= kOpLogBatchCountLimit) {
+                should_notify = true;
+            }
+        }
+
+        if (should_notify) {
+            cv_batch_updated_.notify_one();
+        }
+
+        if (sync) {
+            // Wait for persistence
+            uint64_t target_seq = entry.sequence_id;
+            cv_sync_completed_.wait(lock, [&] {
+                return last_persisted_seq_id_.load() >= target_seq;
+            });
         }
     }
-    if (err != ErrorCode::OK) {
-        LOG(ERROR) << "Failed to write OpLog entry, sequence_id=" << entry.sequence_id;
-        return err;
-    }
 
-    // Update `/latest`.
-    // - Writers: batch update to reduce etcd write pressure.
-    // - Readers / tests: update immediately for simplicity.
+    // Update /latest pointer logic
+    // We defer this to the batch flush or just queue it up here?
+    // Original logic:
     if (!enable_latest_seq_batch_update_) {
+        // Direct update (may be slow, but it's what config asked for)
+        // Warning: This is now done AFTER op log write, which is correct order.
         return UpdateLatestSequenceId(entry.sequence_id);
     }
-
+    
+    // For batch update, we update the pending counter
     pending_latest_seq_id_.store(entry.sequence_id);
     size_t count = pending_count_.fetch_add(1) + 1;
     if (count >= kBatchSize) {
@@ -133,6 +161,72 @@ ErrorCode EtcdOpLogStore::WriteOpLog(const OpLogEntry& entry) {
 
     return ErrorCode::OK;
 }
+
+void EtcdOpLogStore::BatchWriteThread() {
+    while (batch_write_running_.load()) {
+        std::unique_lock<std::mutex> lock(batch_mutex_);
+        if (pending_batch_.empty()) {
+            // Wait for signal or timeout (Group Commit time window)
+            cv_batch_updated_.wait_for(lock, std::chrono::milliseconds(kOpLogBatchTimeoutMs));
+        }
+
+        if (!batch_write_running_.load() && pending_batch_.empty()) {
+            break;
+        }
+
+        if (!pending_batch_.empty()) {
+            FlushBatch();
+        }
+    }
+}
+
+void EtcdOpLogStore::FlushBatch() {
+    // Note: batch_mutex_ is LOCKED when entering this function
+    std::deque<BatchEntry> batch_to_write;
+    batch_to_write.swap(pending_batch_);
+
+    // Unlock to allow new appends while we perform IO
+    batch_mutex_.unlock();
+
+    if (batch_to_write.empty()) {
+        // Should not happen usually
+        batch_mutex_.lock();
+        return;
+    }
+
+    std::vector<std::string> keys;
+    std::vector<std::string> values;
+    keys.reserve(batch_to_write.size());
+    values.reserve(batch_to_write.size());
+
+    uint64_t max_seq = 0;
+    for (const auto& entry : batch_to_write) {
+        keys.push_back(entry.key);
+        values.push_back(entry.value);
+        if (entry.sequence_id > max_seq) {
+            max_seq = entry.sequence_id;
+        }
+    }
+
+    // Perform Batch IO
+    ErrorCode err = EtcdHelper::BatchCreate(keys, values);
+
+    // Re-lock to update state
+    batch_mutex_.lock();
+
+    if (err == ErrorCode::OK) {
+        if (max_seq > last_persisted_seq_id_.load()) {
+            last_persisted_seq_id_.store(max_seq);
+        }
+    } else {
+        LOG(ERROR) << "Failed to flush OpLog batch, count=" << batch_to_write.size();
+        // Potential improvement: retry logic or separate handling
+    }
+
+    // Wake up all waiting threads (Strategy 2+: DELETE waiters)
+    cv_sync_completed_.notify_all();
+}
+
 
 ErrorCode EtcdOpLogStore::ReadOpLog(uint64_t sequence_id,
                                      OpLogEntry& entry) {

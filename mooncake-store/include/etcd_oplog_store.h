@@ -39,9 +39,11 @@ class EtcdOpLogStore {
     /**
      * @brief Write an OpLog entry to etcd.
      * @param entry: The OpLog entry to write.
+     * @param sync: If true, wait until the entry is persisted to etcd.
+     *              If false, buffer it and return immediately (Group Commit).
      * @return: Error code.
      */
-    ErrorCode WriteOpLog(const OpLogEntry& entry);
+    ErrorCode WriteOpLog(const OpLogEntry& entry, bool sync = true);
 
     /**
      * @brief Read an OpLog entry from etcd by sequence_id.
@@ -197,6 +199,29 @@ class EtcdOpLogStore {
     // Batch update configuration
     static constexpr size_t kBatchSize = 100;              // Update every 100 entries
     static constexpr int kBatchIntervalMs = 1000;          // Or every 1 second
+
+    // Group Commit / Batch Write support
+    struct BatchEntry {
+        std::string key;
+        std::string value;
+        uint64_t sequence_id;
+    };
+
+    void BatchWriteThread();
+    void FlushBatch();
+
+    mutable std::mutex batch_mutex_;
+    std::deque<BatchEntry> pending_batch_;
+    std::condition_variable cv_batch_updated_;   // Notify background thread
+    std::condition_variable cv_sync_completed_;  // Notify sync waiters
+    std::atomic<bool> batch_write_running_{false};
+    std::thread batch_write_thread_;
+    std::atomic<uint64_t> last_persisted_seq_id_{0};
+
+    // Configs for OpLog batching
+    static constexpr size_t kOpLogBatchSizeLimit = 1 * 1024 * 1024; // 1MB payload limit (soft)
+    static constexpr size_t kOpLogBatchCountLimit = 100;            // 100 entries
+    static constexpr int kOpLogBatchTimeoutMs = 10;                 // 10ms max latency for Async
 };
 
 }  // namespace mooncake

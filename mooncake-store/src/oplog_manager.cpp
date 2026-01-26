@@ -42,7 +42,10 @@ uint64_t OpLogManager::Append(OpType type, const std::string& key,
         // Release lock before writing to etcd to avoid blocking
         // We use the original entry (before it was copied to buffer)
         lock.unlock();
-        ErrorCode err = etcd_oplog_store_->WriteOpLog(entry);
+        
+        // Strategy 2+: PUT_END is Async, REMOVE (and others) are Sync
+        bool sync = (entry.op_type != OpType::PUT_END);
+        ErrorCode err = etcd_oplog_store_->WriteOpLog(entry, sync);
         if (err != ErrorCode::OK) {
             // Log error but don't fail the operation
             // The entry is already in the memory buffer
@@ -83,7 +86,9 @@ ErrorCode OpLogManager::PersistEntryToEtcd(const OpLogEntry& entry) const {
     if (!store) {
         return ErrorCode::ETCD_OPERATION_ERROR;
     }
-    return store->WriteOpLog(entry);
+    // Strategy 2+: PUT_END is Async, REMOVE (and others) are Sync
+    bool sync = (entry.op_type != OpType::PUT_END);
+    return store->WriteOpLog(entry, sync);
 }
 
 tl::expected<uint64_t, ErrorCode> OpLogManager::AppendAndPersist(
