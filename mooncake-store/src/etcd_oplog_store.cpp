@@ -244,11 +244,8 @@ void EtcdOpLogStore::FlushBatch() {
         
         // Update HA metrics
         HAMetricManager::instance().inc_oplog_batch_commits();
-
-        // Print metrics for HA strategy (Group Commit)
-        HAMetricManager::instance().inc_oplog_batch_commits();
         if (has_sync_entry) {
-            HAMetricManager::instance().inc_oplog_sync_batch_commits();
+             HAMetricManager::instance().inc_oplog_sync_batch_commits();
         }
 
         if (batch_to_write.size() > 1) {
@@ -257,6 +254,10 @@ void EtcdOpLogStore::FlushBatch() {
         } else {
             VLOG(3) << "HA Strategy: Group Commit flush success. batch_size=1, max_seq=" 
                     << max_seq;
+            if (!has_sync_entry) {
+                 // Log occasionally if we are flushing single async entries (inefficiency indicator)
+                 LOG_EVERY_N(INFO, 1000) << "Note: Frequent single-entry async flushes detected (sample).";
+            }
         }
     } else {
         LOG(ERROR) << "Failed to flush OpLog batch, count=" << batch_to_write.size();
