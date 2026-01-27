@@ -124,6 +124,7 @@ SYSTEM_PACKAGES="build-essential \
                   libhiredis-dev \
                   liburing-dev \
                   libjemalloc-dev \
+                  libxxhash-dev \
                   pkg-config \
                   patchelf \
                   libc6-dev \
