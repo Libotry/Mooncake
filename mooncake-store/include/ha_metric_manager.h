@@ -113,6 +113,17 @@ class HAMetricManager {
      */
     void inc_oplog_applied_entries(int64_t val = 1);
     int64_t get_oplog_applied_entries_total();
+    /**
+     * @brief Increase the total number of OpLog batch commits (Group Commit)
+     */
+    void inc_oplog_batch_commits(int64_t count = 1);
+    int64_t get_oplog_batch_commits_total();
+
+    /**
+     * @brief Increase the number of sync batch commits (triggered by DELETE/Sync ops)
+     */
+    void inc_oplog_sync_batch_commits(int64_t count = 1);
+    int64_t get_oplog_sync_batch_commits_total();
 
     // ========== Latency Histograms ==========
 
@@ -178,6 +189,8 @@ class HAMetricManager {
     ylt::metric::counter_t oplog_etcd_write_retries_total_;
     ylt::metric::counter_t oplog_watch_disconnections_total_;
     ylt::metric::counter_t oplog_applied_entries_total_;
+    ylt::metric::counter_t oplog_batch_commits_total_;
+    ylt::metric::counter_t oplog_sync_batch_commits_total_;
 
     // Latency Histograms (buckets in microseconds: 100us, 500us, 1ms, 5ms, 10ms, 50ms, 100ms, 500ms, 1s)
     ylt::metric::histogram_t oplog_etcd_write_latency_us_;

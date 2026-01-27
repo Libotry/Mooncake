@@ -57,6 +57,12 @@ HAMetricManager::HAMetricManager()
       oplog_applied_entries_total_(
           "ha_oplog_applied_entries_total",
           "Total number of OpLog entries successfully applied"),
+      oplog_batch_commits_total_(
+          "ha_oplog_batch_commits_total",
+          "Total number of Group Commit batches flushed to etcd"),
+      oplog_sync_batch_commits_total_(
+          "ha_oplog_sync_batch_commits_total",
+          "Total number of sync batches (triggered by DELETE/Sync ops)"),
 
       // Latency Histograms (buckets in microseconds)
       // 100us, 500us, 1ms, 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s
@@ -195,6 +201,22 @@ int64_t HAMetricManager::get_oplog_applied_entries_total() {
     return static_cast<int64_t>(oplog_applied_entries_total_.value());
 }
 
+void HAMetricManager::inc_oplog_batch_commits(int64_t val) {
+    oplog_batch_commits_total_.inc(val);
+}
+
+void HAMetricManager::inc_oplog_sync_batch_commits(int64_t val) {
+    oplog_sync_batch_commits_total_.inc(val);
+}
+
+int64_t HAMetricManager::get_oplog_batch_commits_total() {
+    return static_cast<int64_t>(oplog_batch_commits_total_.value());
+}
+
+int64_t HAMetricManager::get_oplog_sync_batch_commits_total() {
+    return static_cast<int64_t>(oplog_sync_batch_commits_total_.value());
+}
+
 // ========== Latency Histograms ==========
 
 void HAMetricManager::observe_oplog_etcd_write_latency_us(int64_t latency_us) {
@@ -269,6 +291,8 @@ std::string HAMetricManager::get_summary_string() {
     ss << ", lag=" << get_oplog_standby_lag();
     ss << ", pending=" << get_oplog_pending_entries();
     ss << ", mutation_queue=" << get_pending_mutation_queue_size();
+    ss << ", batch_commits=" << get_oplog_batch_commits_total();
+    ss << ", sync_commits=" << get_oplog_sync_batch_commits_total();
     ss << ", skipped=" << get_oplog_skipped_entries_total();
     ss << ", checksum_fail=" << get_oplog_checksum_failures_total();
     ss << ", etcd_fail=" << get_oplog_etcd_write_failures_total();

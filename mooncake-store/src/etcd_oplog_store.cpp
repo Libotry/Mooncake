@@ -4,6 +4,8 @@
 #include <sstream>
 #include <iomanip>
 
+#include "ha_metric_manager.h"
+
 #if __has_include(<jsoncpp/json/json.h>)
 #include <jsoncpp/json/json.h>  // Ubuntu
 #else
@@ -117,7 +119,7 @@ ErrorCode EtcdOpLogStore::WriteOpLog(const OpLogEntry& entry, bool sync) {
 
     {
         std::unique_lock<std::mutex> lock(batch_mutex_);
-        pending_batch_.push_back({std::move(key), std::move(value), entry.sequence_id});
+        pending_batch_.push_back({std::move(key), std::move(value), entry.sequence_id, sync});
 
         bool should_notify = false;
         if (sync) {
@@ -206,8 +208,12 @@ void EtcdOpLogStore::FlushBatch() {
     values.reserve(batch_to_write.size());
 
     uint64_t max_seq = 0;
+    bool has_sync_entry = false;
     for (const auto& entry : batch_to_write) {
         keys.push_back(entry.key);
+        if (entry.is_sync) {
+            has_sync_entry = true;
+        }
         values.push_back(entry.value);
         if (entry.sequence_id > max_seq) {
             max_seq = entry.sequence_id;
@@ -234,6 +240,23 @@ void EtcdOpLogStore::FlushBatch() {
     if (err == ErrorCode::OK) {
         if (max_seq > last_persisted_seq_id_.load()) {
             last_persisted_seq_id_.store(max_seq);
+        }
+        
+        // Update HA metrics
+        HAMetricManager::instance().inc_oplog_batch_commits();
+
+        // Print metrics for HA strategy (Group Commit)
+        HAMetricManager::instance().inc_oplog_batch_commits();
+        if (has_sync_entry) {
+            HAMetricManager::instance().inc_oplog_sync_batch_commits();
+        }
+
+        if (batch_to_write.size() > 1) {
+            LOG(INFO) << "HA Strategy: Group Commit flush success. batch_size=" 
+                      << batch_to_write.size() << ", max_seq=" << max_seq;
+        } else {
+            VLOG(3) << "HA Strategy: Group Commit flush success. batch_size=1, max_seq=" 
+                    << max_seq;
         }
     } else {
         LOG(ERROR) << "Failed to flush OpLog batch, count=" << batch_to_write.size();

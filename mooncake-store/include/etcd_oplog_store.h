@@ -206,6 +206,7 @@ class EtcdOpLogStore {
         std::string key;
         std::string value;
         uint64_t sequence_id;
+        bool is_sync; // Track if entry requires sync
     };
 
     void BatchWriteThread();
