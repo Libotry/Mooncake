@@ -510,3 +510,26 @@ ErrorCode EtcdHelper::WatchWithPrefixFromRevision(
     (void)callback_func;
     LOG(FATAL) << "Etcd is not enabled in compilation";
     return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
+ErrorCode EtcdHelper::CancelWatchWithPrefix(const char* prefix,
+                                             const size_t prefix_size) {
+    (void)prefix;
+    (void)prefix_size;
+    LOG(FATAL) << "Etcd is not enabled in compilation";
+    return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
+ErrorCode EtcdHelper::WaitWatchWithPrefixStopped(const char* prefix,
+                                                const size_t prefix_size,
+                                                int timeout_ms) {
+    (void)prefix;
+    (void)prefix_size;
+    (void)timeout_ms;
+    LOG(FATAL) << "Etcd is not enabled in compilation";
+    return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
+#endif
+
+}  // namespace mooncake
