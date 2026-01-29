@@ -100,6 +100,9 @@ DEFINE_bool(enable_disk_eviction, true,
 DEFINE_uint64(
     quota_bytes, 0,
     "Quota for storage backend in bytes (0 = use default 90% of capacity)");
+DEFINE_uint64(
+    snapshot_interval_sec, 600,
+    "Interval in seconds for periodic metadata snapshot (HA only, 0 = disabled)");
 
 void InitMasterConf(const mooncake::DefaultConfig& default_config,
                     mooncake::MasterConfig& master_config) {
@@ -175,6 +178,9 @@ void InitMasterConf(const mooncake::DefaultConfig& default_config,
                            FLAGS_enable_disk_eviction);
     default_config.GetUInt64("quota_bytes", &master_config.quota_bytes,
                              FLAGS_quota_bytes);
+    default_config.GetUInt64("snapshot_interval_sec",
+                             &master_config.snapshot_interval_sec,
+                             FLAGS_snapshot_interval_sec);
 }
 
 void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
@@ -359,6 +365,11 @@ void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
          !info.is_default) ||
         !conf_set) {
         master_config.quota_bytes = FLAGS_quota_bytes;
+    }
+    if ((google::GetCommandLineFlagInfo("snapshot_interval_sec", &info) &&
+         !info.is_default) ||
+        !conf_set) {
+        master_config.snapshot_interval_sec = FLAGS_snapshot_interval_sec;
     }
 }
 

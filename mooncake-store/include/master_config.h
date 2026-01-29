@@ -45,6 +45,9 @@ struct MasterConfig {
     // Storage backend eviction configuration
     bool enable_disk_eviction;
     uint64_t quota_bytes;
+
+    // Periodic snapshot configuration (HA only)
+    uint64_t snapshot_interval_sec;
 };
 
 class MasterServiceSupervisorConfig {
@@ -227,6 +230,7 @@ class WrappedMasterServiceConfig {
 
         put_start_discard_timeout_sec = config.put_start_discard_timeout_sec;
         put_start_release_timeout_sec = config.put_start_release_timeout_sec;
+        snapshot_interval_sec = config.snapshot_interval_sec;
     }
 
     // From MasterServiceSupervisorConfig, enable_ha is set to true
