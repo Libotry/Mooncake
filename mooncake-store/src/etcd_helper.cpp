@@ -334,7 +334,7 @@ ErrorCode EtcdHelper::WatchWithPrefixFromRevision(
                           int64_t)) {
     char* err_msg = nullptr;
     void* callback_func_ptr = reinterpret_cast<void*>(callback_func);
-    int ret = EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(
+    int ret = EtcdStoreWatchWithPrefixFromRevisionWrapper(
         (char*)prefix, (int)prefix_size, (GoInt64)start_revision, callback_context,
         callback_func_ptr, &err_msg);
     if (ret != 0) {

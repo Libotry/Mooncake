@@ -12,19 +12,19 @@ package main
 #ifndef MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
 #define MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
 
-typedef void (*watch_cb_v2_t)(void* ctx,
+typedef void (*watch_cb_t)(void* ctx,
                              const char* key, size_t keySize,
                              const char* value, size_t valueSize,
                              int eventType,
                              long long modRev);
 
-static inline void call_watch_cb_v2(void* func,
+static inline void call_watch_cb(void* func,
                                     void* ctx,
                                     const char* key, size_t keySize,
                                     const char* value, size_t valueSize,
                                     int eventType,
                                     long long modRev) {
-  ((watch_cb_v2_t)func)(ctx, key, keySize, value, valueSize, eventType, modRev);
+  ((watch_cb_t)func)(ctx, key, keySize, value, valueSize, eventType, modRev);
 }
 
 #endif  // MOONCAKE_ETCD_CALLBACK_TRAMPOLINES
@@ -730,8 +730,8 @@ func EtcdStoreDeleteRangeWrapper(startKey *C.char, startKeySize C.int, endKey *C
 	return 0
 }
 
-//export EtcdStoreWatchWithPrefixFromRevisionV2Wrapper
-func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.int, startRevision C.longlong, callbackContext unsafe.Pointer, callbackFunc unsafe.Pointer, errMsg **C.char) int {
+//export EtcdStoreWatchWithPrefixFromRevisionWrapper
+func EtcdStoreWatchWithPrefixFromRevisionWrapper(prefix *C.char, prefixSize C.int, startRevision C.longlong, callbackContext unsafe.Pointer, callbackFunc unsafe.Pointer, errMsg **C.char) int {
 	if storeClient == nil {
 		*errMsg = C.CString("etcd client not initialized")
 		return -1
@@ -816,7 +816,7 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 								}
 							}()
 							// Call the C callback function via C trampoline (safe ABI)
-							C.call_watch_cb_v2(callbackFunc, callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+							C.call_watch_cb(callbackFunc, callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
 						}()
 						return
 					}
@@ -850,7 +850,7 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 								}
 							}()
 							// Call the C callback function via C trampoline (safe ABI)
-							C.call_watch_cb_v2(callbackFunc, callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
+							C.call_watch_cb(callbackFunc, callbackContext, nil, 0, nil, 0, C.int(2) /*WATCH_BROKEN*/, C.longlong(0))
 						}()
 						return
 					}
@@ -968,7 +968,7 @@ func EtcdStoreWatchWithPrefixFromRevisionV2Wrapper(prefix *C.char, prefixSize C.
 								// Callback signature:
 								// void cb(void* ctx, char* key, size_t keySize, char* value, size_t valueSize, int eventType, long long modRev)
 								// Call the C callback function via C trampoline (safe ABI)
-								C.call_watch_cb_v2(callbackFunc, callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
+								C.call_watch_cb(callbackFunc, callbackContext, keyPtr, keySize, valuePtr, valueSize, eventType, modRev)
 							}()
 						}
 					}
