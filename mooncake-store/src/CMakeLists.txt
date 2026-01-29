@@ -26,6 +26,7 @@ set(MOONCAKE_STORE_SOURCES
     file_storage.cpp
     oplog_manager.cpp
     etcd_oplog_store.cpp
+    etcd_snapshot_provider.cpp
     oplog_watcher.cpp
     oplog_applier.cpp
     hot_standby_service.cpp

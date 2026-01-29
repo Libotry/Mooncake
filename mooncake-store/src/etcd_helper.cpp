@@ -379,6 +379,63 @@ ErrorCode EtcdHelper::WaitWatchWithPrefixStopped(const char* prefix,
     }
     return ErrorCode::OK;
 }
+
+ErrorCode EtcdHelper::SaveSnapshotTxn(
+    const std::string& snapshot_data_key,
+    const std::string& snapshot_data_value,
+    const std::string& snapshot_seq_key,
+    const std::string& snapshot_seq_value,
+    const std::string& latest_key,
+    const std::string& latest_value,
+    const std::string& old_snapshot_data_key,
+    const std::string& old_snapshot_seq_key) {
+    char* err_msg = nullptr;
+    int ret = EtcdStoreSnapshotTxnWrapper(
+        const_cast<char*>(snapshot_data_key.c_str()),
+        static_cast<int>(snapshot_data_key.size()),
+        const_cast<char*>(snapshot_data_value.c_str()),
+        static_cast<int>(snapshot_data_value.size()),
+        const_cast<char*>(snapshot_seq_key.c_str()),
+        static_cast<int>(snapshot_seq_key.size()),
+        const_cast<char*>(snapshot_seq_value.c_str()),
+        static_cast<int>(snapshot_seq_value.size()),
+        const_cast<char*>(latest_key.c_str()),
+        static_cast<int>(latest_key.size()),
+        const_cast<char*>(latest_value.c_str()),
+        static_cast<int>(latest_value.size()),
+        const_cast<char*>(old_snapshot_data_key.c_str()),
+        static_cast<int>(old_snapshot_data_key.size()),
+        const_cast<char*>(old_snapshot_seq_key.c_str()),
+        static_cast<int>(old_snapshot_seq_key.size()),
+        &err_msg);
+    if (ret != 0) {
+        LOG(ERROR) << "SaveSnapshotTxn failed: " << (err_msg ? err_msg : "unknown");
+        if (err_msg) {
+            free(err_msg);
+        }
+        return ErrorCode::ETCD_OPERATION_ERROR;
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode EtcdHelper::DeleteSnapshot(const std::string& snapshot_data_key,
+                                     const std::string& snapshot_seq_key) {
+    char* err_msg = nullptr;
+    int ret = EtcdStoreDeleteSnapshotWrapper(
+        const_cast<char*>(snapshot_data_key.c_str()),
+        static_cast<int>(snapshot_data_key.size()),
+        const_cast<char*>(snapshot_seq_key.c_str()),
+        static_cast<int>(snapshot_seq_key.size()),
+        &err_msg);
+    if (ret != 0) {
+        LOG(ERROR) << "DeleteSnapshot failed: " << (err_msg ? err_msg : "unknown");
+        if (err_msg) {
+            free(err_msg);
+        }
+        return ErrorCode::ETCD_OPERATION_ERROR;
+    }
+    return ErrorCode::OK;
+}
 #else
 ErrorCode EtcdHelper::ConnectToEtcdStoreClient(
     const std::string& etcd_endpoints) {
@@ -526,6 +583,35 @@ ErrorCode EtcdHelper::WaitWatchWithPrefixStopped(const char* prefix,
     (void)prefix;
     (void)prefix_size;
     (void)timeout_ms;
+    LOG(FATAL) << "Etcd is not enabled in compilation";
+    return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
+ErrorCode EtcdHelper::SaveSnapshotTxn(
+    const std::string& snapshot_data_key,
+    const std::string& snapshot_data_value,
+    const std::string& snapshot_seq_key,
+    const std::string& snapshot_seq_value,
+    const std::string& latest_key,
+    const std::string& latest_value,
+    const std::string& old_snapshot_data_key,
+    const std::string& old_snapshot_seq_key) {
+    (void)snapshot_data_key;
+    (void)snapshot_data_value;
+    (void)snapshot_seq_key;
+    (void)snapshot_seq_value;
+    (void)latest_key;
+    (void)latest_value;
+    (void)old_snapshot_data_key;
+    (void)old_snapshot_seq_key;
+    LOG(FATAL) << "Etcd is not enabled in compilation";
+    return ErrorCode::ETCD_OPERATION_ERROR;
+}
+
+ErrorCode EtcdHelper::DeleteSnapshot(const std::string& snapshot_data_key,
+                                     const std::string& snapshot_seq_key) {
+    (void)snapshot_data_key;
+    (void)snapshot_seq_key;
     LOG(FATAL) << "Etcd is not enabled in compilation";
     return ErrorCode::ETCD_OPERATION_ERROR;
 }

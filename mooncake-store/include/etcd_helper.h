@@ -220,6 +220,42 @@ class EtcdHelper {
                                                 const size_t prefix_size,
                                                 int timeout_ms);
 
+    /*
+     * @brief Atomically save a snapshot to etcd and delete old snapshot.
+     *        This is a transaction that:
+     *        1. Writes snapshot data (metadata JSON)
+     *        2. Writes snapshot sequence_id
+     *        3. Updates the "latest" pointer
+     *        4. Deletes old snapshot data and seq_id (if provided)
+     * @param snapshot_data_key: Key for snapshot data
+     * @param snapshot_data_value: JSON serialized snapshot data
+     * @param snapshot_seq_key: Key for snapshot sequence_id
+     * @param snapshot_seq_value: String representation of sequence_id
+     * @param latest_key: Key for "latest" pointer
+     * @param latest_value: New snapshot ID to set as latest
+     * @param old_snapshot_data_key: Key of old snapshot data to delete (empty to skip)
+     * @param old_snapshot_seq_key: Key of old snapshot seq to delete (empty to skip)
+     * @return: Error code.
+     */
+    static ErrorCode SaveSnapshotTxn(
+        const std::string& snapshot_data_key,
+        const std::string& snapshot_data_value,
+        const std::string& snapshot_seq_key,
+        const std::string& snapshot_seq_value,
+        const std::string& latest_key,
+        const std::string& latest_value,
+        const std::string& old_snapshot_data_key,
+        const std::string& old_snapshot_seq_key);
+
+    /*
+     * @brief Delete a snapshot's data and sequence_id keys.
+     * @param snapshot_data_key: Key for snapshot data
+     * @param snapshot_seq_key: Key for snapshot sequence_id
+     * @return: Error code.
+     */
+    static ErrorCode DeleteSnapshot(const std::string& snapshot_data_key,
+                                    const std::string& snapshot_seq_key);
+
    private:
     // Variables that are used to ensure the etcd client
     // is only connected once.

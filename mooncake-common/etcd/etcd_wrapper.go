@@ -1046,4 +1046,98 @@ func EtcdStoreCancelWatchWithPrefixWrapper(prefix *C.char, prefixSize C.int, err
 	return 0
 }
 
+// EtcdStoreSnapshotTxnWrapper atomically:
+// 1. Writes snapshot data key-value pair
+// 2. Writes snapshot sequence_id key-value pair
+// 3. Updates the "latest" pointer to the new snapshot
+// 4. Deletes the old snapshot data if oldSnapshotId is provided
+//
+//export EtcdStoreSnapshotTxnWrapper
+func EtcdStoreSnapshotTxnWrapper(
+	snapshotDataKey *C.char, snapshotDataKeySize C.int,
+	snapshotDataValue *C.char, snapshotDataValueSize C.int,
+	snapshotSeqKey *C.char, snapshotSeqKeySize C.int,
+	snapshotSeqValue *C.char, snapshotSeqValueSize C.int,
+	latestKey *C.char, latestKeySize C.int,
+	latestValue *C.char, latestValueSize C.int,
+	oldSnapshotDataKey *C.char, oldSnapshotDataKeySize C.int,
+	oldSnapshotSeqKey *C.char, oldSnapshotSeqKeySize C.int,
+	errMsg **C.char) int {
+
+	if storeClient == nil {
+		*errMsg = C.CString("etcd client not initialized")
+		return -1
+	}
+
+	// Convert C strings to Go strings
+	dataKey := C.GoStringN(snapshotDataKey, snapshotDataKeySize)
+	dataValue := C.GoStringN(snapshotDataValue, snapshotDataValueSize)
+	seqKey := C.GoStringN(snapshotSeqKey, snapshotSeqKeySize)
+	seqValue := C.GoStringN(snapshotSeqValue, snapshotSeqValueSize)
+	latKey := C.GoStringN(latestKey, latestKeySize)
+	latValue := C.GoStringN(latestValue, latestValueSize)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Build the transaction operations
+	ops := []clientv3.Op{
+		clientv3.OpPut(dataKey, dataValue),
+		clientv3.OpPut(seqKey, seqValue),
+		clientv3.OpPut(latKey, latValue),
+	}
+
+	// Add delete operations for old snapshot if provided
+	if oldSnapshotDataKeySize > 0 {
+		oldDataKey := C.GoStringN(oldSnapshotDataKey, oldSnapshotDataKeySize)
+		ops = append(ops, clientv3.OpDelete(oldDataKey))
+	}
+	if oldSnapshotSeqKeySize > 0 {
+		oldSeqKey := C.GoStringN(oldSnapshotSeqKey, oldSnapshotSeqKeySize)
+		ops = append(ops, clientv3.OpDelete(oldSeqKey))
+	}
+
+	// Execute the transaction (unconditional - no If clause)
+	_, err := storeClient.Txn(ctx).Then(ops...).Commit()
+	if err != nil {
+		*errMsg = C.CString(err.Error())
+		return -1
+	}
+
+	return 0
+}
+
+// EtcdStoreDeleteSnapshotWrapper deletes a snapshot's data and sequence_id keys.
+//
+//export EtcdStoreDeleteSnapshotWrapper
+func EtcdStoreDeleteSnapshotWrapper(
+	snapshotDataKey *C.char, snapshotDataKeySize C.int,
+	snapshotSeqKey *C.char, snapshotSeqKeySize C.int,
+	errMsg **C.char) int {
+
+	if storeClient == nil {
+		*errMsg = C.CString("etcd client not initialized")
+		return -1
+	}
+
+	dataKey := C.GoStringN(snapshotDataKey, snapshotDataKeySize)
+	seqKey := C.GoStringN(snapshotSeqKey, snapshotSeqKeySize)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ops := []clientv3.Op{
+		clientv3.OpDelete(dataKey),
+		clientv3.OpDelete(seqKey),
+	}
+
+	_, err := storeClient.Txn(ctx).Then(ops...).Commit()
+	if err != nil {
+		*errMsg = C.CString(err.Error())
+		return -1
+	}
+
+	return 0
+}
+
 func main() {}
