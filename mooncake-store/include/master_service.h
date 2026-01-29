@@ -37,6 +37,7 @@ namespace mooncake {
 class AllocationStrategy;
 class EvictionStrategy;
 class BufferAllocatorBase;
+class EtcdSnapshotProvider;
 struct StandbyObjectMetadata;
 // ReplicationService forward declaration removed - using etcd-based OpLog sync instead
 
@@ -783,9 +784,17 @@ class MasterService {
     std::thread pending_mutations_thread_;
     static constexpr size_t kMaxPendingMutations = 10000;  // Max queue size to prevent unbounded growth
 
+    // Periodic snapshot thread (HA only).
+    // This thread periodically takes a metadata snapshot and stores it in etcd.
+    void SnapshotThreadFunc();
+    std::thread snapshot_thread_;
+    std::atomic<bool> snapshot_running_{false};
+    std::unique_ptr<EtcdSnapshotProvider> snapshot_provider_;
+
     // Discarded replicas management
     const std::chrono::seconds put_start_discard_timeout_sec_;
     const std::chrono::seconds put_start_release_timeout_sec_;
+    const uint64_t snapshot_interval_sec_;
     class DiscardedReplicas {
        public:
         DiscardedReplicas() = delete;

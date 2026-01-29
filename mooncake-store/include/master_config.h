@@ -190,6 +190,7 @@ class WrappedMasterServiceConfig {
     uint64_t put_start_release_timeout_sec = DEFAULT_PUT_START_RELEASE_TIMEOUT;
     bool enable_disk_eviction = true;
     uint64_t quota_bytes = 0;
+    uint64_t snapshot_interval_sec = 600;  // Default: 10 minutes
 
     WrappedMasterServiceConfig() = default;
 
@@ -284,6 +285,7 @@ class MasterServiceConfigBuilder {
     uint64_t quota_bytes_ = 0;
     uint64_t put_start_discard_timeout_sec_ = DEFAULT_PUT_START_DISCARD_TIMEOUT;
     uint64_t put_start_release_timeout_sec_ = DEFAULT_PUT_START_RELEASE_TIMEOUT;
+    uint64_t snapshot_interval_sec_ = 600;  // Default: 10 minutes
 
    public:
     MasterServiceConfigBuilder() = default;
@@ -369,6 +371,12 @@ class MasterServiceConfigBuilder {
         return *this;
     }
 
+    MasterServiceConfigBuilder& set_snapshot_interval_sec(
+        uint64_t snapshot_interval_sec) {
+        snapshot_interval_sec_ = snapshot_interval_sec;
+        return *this;
+    }
+
     MasterServiceConfig build() const;
 };
 
@@ -393,6 +401,7 @@ class MasterServiceConfig {
     uint64_t put_start_release_timeout_sec = DEFAULT_PUT_START_RELEASE_TIMEOUT;
     bool enable_disk_eviction = true;
     uint64_t quota_bytes = 0;
+    uint64_t snapshot_interval_sec = 600;  // Default: 10 minutes
 
     MasterServiceConfig() = default;
 
@@ -416,6 +425,7 @@ class MasterServiceConfig {
         quota_bytes = config.quota_bytes;
         put_start_discard_timeout_sec = config.put_start_discard_timeout_sec;
         put_start_release_timeout_sec = config.put_start_release_timeout_sec;
+        snapshot_interval_sec = config.snapshot_interval_sec;
     }
 
     // Static factory method to create a builder
@@ -442,6 +452,7 @@ inline MasterServiceConfig MasterServiceConfigBuilder::build() const {
     config.put_start_release_timeout_sec = put_start_release_timeout_sec_;
     config.enable_disk_eviction = enable_disk_eviction_;
     config.quota_bytes = quota_bytes_;
+    config.snapshot_interval_sec = snapshot_interval_sec_;
     return config;
 }
 

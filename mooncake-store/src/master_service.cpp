@@ -11,6 +11,7 @@
 #include "allocator.h"
 #include "etcd_helper.h"
 #include "etcd_oplog_store.h"
+#include "etcd_snapshot_provider.h"
 #include "ha_metric_manager.h"
 #include "master_metric_manager.h"
 #include "metadata_store.h"  // For MetadataPayload
@@ -145,7 +146,8 @@ MasterService::MasterService(const MasterServiceConfig& config)
       memory_allocator_type_(config.memory_allocator),
       allocation_strategy_(std::make_shared<RandomAllocationStrategy>()),
       put_start_discard_timeout_sec_(config.put_start_discard_timeout_sec),
-      put_start_release_timeout_sec_(config.put_start_release_timeout_sec) {
+      put_start_release_timeout_sec_(config.put_start_release_timeout_sec),
+      snapshot_interval_sec_(config.snapshot_interval_sec) {
     if (eviction_ratio_ < 0.0 || eviction_ratio_ > 1.0) {
         LOG(ERROR) << "Eviction ratio must be between 0.0 and 1.0, "
                    << "current value: " << eviction_ratio_;
@@ -224,6 +226,19 @@ MasterService::MasterService(const MasterServiceConfig& config)
         pending_mutations_running_.store(true);
         pending_mutations_thread_ =
             std::thread(&MasterService::PendingMutationWorker, this);
+    }
+#endif
+
+    // Start periodic snapshot thread (HA only).
+#ifdef STORE_USE_ETCD
+    if (enable_ha_ && !cluster_id_.empty() && snapshot_interval_sec_ > 0) {
+        snapshot_provider_ = std::make_unique<EtcdSnapshotProvider>(cluster_id_);
+        snapshot_running_.store(true);
+        snapshot_thread_ = std::thread(&MasterService::SnapshotThreadFunc, this);
+        LOG(INFO) << "Started periodic snapshot thread, interval_sec=" << snapshot_interval_sec_
+                  << ", cluster_id=" << cluster_id_;
+    } else if (enable_ha_ && snapshot_interval_sec_ == 0) {
+        LOG(INFO) << "Periodic snapshot disabled (snapshot_interval_sec=0)";
     }
 #endif
 }
@@ -365,6 +380,12 @@ MasterService::~MasterService() {
         pending_mutations_cv_.notify_all();
         if (pending_mutations_thread_.joinable()) {
             pending_mutations_thread_.join();
+        }
+    }
+    if (snapshot_running_.load()) {
+        snapshot_running_.store(false);
+        if (snapshot_thread_.joinable()) {
+            snapshot_thread_.join();
         }
     }
 #endif
@@ -2339,5 +2360,83 @@ OpLogManager& MasterService::GetOpLogManager() {
 }
 
 // SetReplicationService removed - using etcd-based OpLog sync instead
+
+#ifdef STORE_USE_ETCD
+void MasterService::SnapshotThreadFunc() {
+    LOG(INFO) << "SnapshotThreadFunc started, interval_sec=" << snapshot_interval_sec_;
+    
+    while (snapshot_running_.load()) {
+        // Sleep for the configured interval (in 1-second increments for responsiveness)
+        for (uint64_t i = 0; i < snapshot_interval_sec_ && snapshot_running_.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        
+        if (!snapshot_running_.load()) {
+            break;
+        }
+        
+        auto start_time = std::chrono::steady_clock::now();
+        
+        // Collect all metadata from shards
+        std::vector<std::pair<std::string, StandbyObjectMetadata>> snapshot_data;
+        size_t total_keys = 0;
+        
+        for (size_t i = 0; i < kNumShards; i++) {
+            MutexLocker lock(&metadata_shards_[i].mutex);
+            for (const auto& [key, metadata] : metadata_shards_[i].metadata) {
+                StandbyObjectMetadata standby_meta;
+                standby_meta.client_id = metadata.client_id;
+                standby_meta.size = metadata.size;
+                // Convert replicas to descriptors
+                standby_meta.replicas.reserve(metadata.replicas.size());
+                for (const auto& replica : metadata.replicas) {
+                    standby_meta.replicas.push_back(replica.get_descriptor());
+                }
+                // Use current max sequence_id from OpLogManager as last_sequence_id
+                standby_meta.last_sequence_id = oplog_manager_.GetLastSequenceId();
+                
+                snapshot_data.emplace_back(key, std::move(standby_meta));
+                total_keys++;
+            }
+        }
+        
+        // Get current oplog sequence_id as snapshot boundary
+        uint64_t snapshot_seq_id = oplog_manager_.GetLastSequenceId();
+        
+        // Generate snapshot_id based on timestamp
+        auto now = std::chrono::system_clock::now();
+        auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count();
+        std::string snapshot_id = std::to_string(timestamp);
+        
+        // Save snapshot
+        auto save_start = std::chrono::steady_clock::now();
+        ErrorCode err = snapshot_provider_->SaveSnapshot(snapshot_id, snapshot_seq_id, snapshot_data);
+        auto save_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - save_start).count();
+        
+        auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time).count();
+        
+        if (err == ErrorCode::OK) {
+            LOG(INFO) << "Periodic snapshot saved successfully"
+                      << ", snapshot_id=" << snapshot_id
+                      << ", sequence_id=" << snapshot_seq_id
+                      << ", total_keys=" << total_keys
+                      << ", collect_time_ms=" << (total_duration - save_duration)
+                      << ", save_time_ms=" << save_duration
+                      << ", total_time_ms=" << total_duration;
+        } else {
+            LOG(ERROR) << "Failed to save periodic snapshot"
+                       << ", snapshot_id=" << snapshot_id
+                       << ", sequence_id=" << snapshot_seq_id
+                       << ", total_keys=" << total_keys
+                       << ", error=" << static_cast<int>(err);
+        }
+    }
+    
+    LOG(INFO) << "SnapshotThreadFunc stopped";
+}
+#endif
 
 }  // namespace mooncake
