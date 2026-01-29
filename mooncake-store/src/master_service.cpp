@@ -2426,6 +2426,19 @@ void MasterService::SnapshotThreadFunc() {
                       << ", collect_time_ms=" << (total_duration - save_duration)
                       << ", save_time_ms=" << save_duration
                       << ", total_time_ms=" << total_duration;
+            
+            // Cleanup OpLog entries before the snapshot sequence_id.
+            // This is safe because the snapshot contains all metadata up to this point,
+            // and Standby can use snapshot + OpLog entries >= snapshot_seq_id to recover.
+            auto cleanup_start = std::chrono::steady_clock::now();
+            size_t cleaned_count = oplog_manager_.CleanupBefore(snapshot_seq_id);
+            auto cleanup_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - cleanup_start).count();
+            
+            LOG(INFO) << "OpLog cleanup after snapshot"
+                      << ", cleaned_entries=" << cleaned_count
+                      << ", before_sequence_id=" << snapshot_seq_id
+                      << ", cleanup_time_ms=" << cleanup_duration;
         } else {
             LOG(ERROR) << "Failed to save periodic snapshot"
                        << ", snapshot_id=" << snapshot_id

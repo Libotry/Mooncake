@@ -125,6 +125,51 @@ size_t OpLogManager::GetEntryCount() const {
     return buffer_.size();
 }
 
+size_t OpLogManager::CleanupBefore(uint64_t before_sequence_id) {
+    size_t memory_cleaned = 0;
+    
+    // 1. Cleanup from etcd first (if configured)
+    std::shared_ptr<EtcdOpLogStore> store;
+    {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        store = etcd_oplog_store_;
+    }
+    
+    if (store) {
+        ErrorCode err = store->CleanupOpLogBefore(before_sequence_id);
+        if (err != ErrorCode::OK) {
+            LOG(WARNING) << "Failed to cleanup OpLog from etcd before sequence_id="
+                         << before_sequence_id << ", error=" << static_cast<int>(err);
+            // Continue to cleanup memory buffer anyway
+        } else {
+            VLOG(1) << "Cleaned up OpLog from etcd before sequence_id=" << before_sequence_id;
+        }
+    }
+    
+    // 2. Cleanup from memory buffer
+    {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        
+        // Remove entries from the front of the buffer while their sequence_id < before_sequence_id
+        while (!buffer_.empty() && buffer_.front().sequence_id < before_sequence_id) {
+            buffer_.pop_front();
+            memory_cleaned++;
+        }
+        
+        // Update first_seq_id_ if we removed entries
+        if (memory_cleaned > 0) {
+            first_seq_id_ = buffer_.empty() ? (last_seq_id_ + 1) : buffer_.front().sequence_id;
+        }
+    }
+    
+    if (memory_cleaned > 0) {
+        LOG(INFO) << "Cleaned up " << memory_cleaned << " OpLog entries from memory buffer"
+                  << ", before_sequence_id=" << before_sequence_id;
+    }
+    
+    return memory_cleaned;
+}
+
 uint64_t OpLogManager::NowMs() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch())

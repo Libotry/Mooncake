@@ -98,6 +98,12 @@ class OpLogManager {
     // Current number of entries in the buffer.
     size_t GetEntryCount() const;
 
+    // Cleanup OpLog entries before the given sequence_id.
+    // This removes entries from both the in-memory buffer and etcd (if configured).
+    // Should be called after a snapshot is successfully saved.
+    // Returns the number of entries cleaned up from memory buffer.
+    size_t CleanupBefore(uint64_t before_sequence_id);
+
     // Verify checksum of an OpLogEntry payload.
     // Returns true if checksum matches, false otherwise.
     // This is public so OpLogWatcher and OpLogApplier can validate entries.
