@@ -82,6 +82,7 @@ class MasterServiceSupervisorConfig {
     uint64_t put_start_release_timeout_sec = DEFAULT_PUT_START_RELEASE_TIMEOUT;
     bool enable_disk_eviction = true;
     uint64_t quota_bytes = 0;
+    uint64_t snapshot_interval_sec = 600;  // Default: 10 minutes
 
     MasterServiceSupervisorConfig() = default;
 
@@ -123,6 +124,7 @@ class MasterServiceSupervisorConfig {
         put_start_release_timeout_sec = config.put_start_release_timeout_sec;
         enable_disk_eviction = config.enable_disk_eviction;
         quota_bytes = config.quota_bytes;
+        snapshot_interval_sec = config.snapshot_interval_sec;
 
         validate();
     }
@@ -261,6 +263,7 @@ class WrappedMasterServiceConfig {
         quota_bytes = config.quota_bytes;
         put_start_discard_timeout_sec = config.put_start_discard_timeout_sec;
         put_start_release_timeout_sec = config.put_start_release_timeout_sec;
+        snapshot_interval_sec = config.snapshot_interval_sec;
     }
 };
 
