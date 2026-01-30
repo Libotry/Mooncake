@@ -142,7 +142,7 @@ size_t OpLogManager::CleanupBefore(uint64_t before_sequence_id) {
                          << before_sequence_id << ", error=" << static_cast<int>(err);
             // Continue to cleanup memory buffer anyway
         } else {
-            VLOG(1) << "Cleaned up OpLog from etcd before sequence_id=" << before_sequence_id;
+            LOG(INFO) << "Cleaned up OpLog from etcd before sequence_id=" << before_sequence_id;
         }
     }
     

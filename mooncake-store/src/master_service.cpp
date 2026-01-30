@@ -2363,7 +2363,8 @@ OpLogManager& MasterService::GetOpLogManager() {
 
 #ifdef STORE_USE_ETCD
 void MasterService::SnapshotThreadFunc() {
-    LOG(INFO) << "SnapshotThreadFunc started, interval_sec=" << snapshot_interval_sec_;
+    LOG(INFO) << "SnapshotThreadFunc started, interval_sec=" << snapshot_interval_sec_
+              << ". First snapshot will run after " << snapshot_interval_sec_ << " seconds.";
     
     while (snapshot_running_.load()) {
         // Sleep for the configured interval (in 1-second increments for responsiveness)

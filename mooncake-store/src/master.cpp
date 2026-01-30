@@ -482,7 +482,8 @@ int main(int argc, char* argv[]) {
               << ", put_start_discard_timeout_sec="
               << master_config.put_start_discard_timeout_sec
               << ", put_start_release_timeout_sec="
-              << master_config.put_start_release_timeout_sec;
+              << master_config.put_start_release_timeout_sec
+              << ", snapshot_interval_sec=" << master_config.snapshot_interval_sec;
 
     // Start HTTP metadata server if enabled
     std::unique_ptr<mooncake::HttpMetadataServer> http_metadata_server;
