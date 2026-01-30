@@ -2375,6 +2375,8 @@ void MasterService::SnapshotThreadFunc() {
             break;
         }
         
+        LOG(INFO) << "Starting periodic snapshot capture...";
+        
         auto start_time = std::chrono::steady_clock::now();
         
         // Collect all metadata from shards
