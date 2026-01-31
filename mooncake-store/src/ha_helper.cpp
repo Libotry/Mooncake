@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "etcd_helper.h"
+#include "etcd_snapshot_provider.h"
 #include "hot_standby_service.h"
 #include "rpc_service.h"
 
@@ -314,8 +315,12 @@ void MasterServiceSupervisor::StartStandbyService(MasterViewHelper& mv_helper,
     standby_config.verification_interval_sec = 30;
     standby_config.max_replication_lag_entries = 1000;
     standby_config.enable_verification = false;  // Disable verification for now
+    standby_config.enable_snapshot_bootstrap = true;
 
     standby_service_ = std::make_unique<HotStandbyService>(standby_config);
+    // Inject EtcdSnapshotProvider for bootstrap
+    standby_service_->SetSnapshotProvider(
+        std::make_unique<EtcdSnapshotProvider>(config_.cluster_id));
 
     ErrorCode err = standby_service_->Start(
         current_leader, config_.etcd_endpoints, config_.cluster_id);
