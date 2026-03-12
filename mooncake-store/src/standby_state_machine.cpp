@@ -268,8 +268,8 @@ StandbyStateMachine::GetTransitionHistory(size_t max_records) const {
 }
 
 std::chrono::milliseconds StandbyStateMachine::GetTimeInCurrentState() const {
-    auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
+    auto now = std::chrono::steady_clock::now();
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         now - state_enter_time_);
 }
