@@ -85,8 +85,9 @@ bool OpLogWatcher::StartFromSequenceId(uint64_t start_seq_id) {
         std::vector<OpLogEntry> batch;
         EtcdRevisionId rev = 0;
         if (!ReadOpLogSince(read_seq_id, batch, rev)) {
-            last_read_rev = 0;
-            break;
+            LOG(ERROR) << "ReadOpLogSince failed during initial sync"
+                       << ", read_seq_id=" << read_seq_id;
+            return false;
         }
         last_read_rev = rev;
         if (!batch.empty()) {
