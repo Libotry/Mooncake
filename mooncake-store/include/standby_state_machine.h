@@ -26,12 +26,12 @@ namespace mooncake {
  *            ▼                              Connected    │
  *     ┌─────────────┐ Error/Disconnect ┌────────────┐    │
  *     │   SYNCING   │────────────────► │RECONNECTING│────┤
- *     └──────┬──────┘◄──────────────── └────────────┘    │
- *            │ Sync complete               ▲             │
- *            ▼                             │             │
- *     ┌─────────────┐  Watch broken/   ────┘             │
- *     │  WATCHING   │── Disconnect                       │
- *     └──────┬──────┘                                    │
+ *     └──────┬──────┘◄──────────────── └──────┬─────┘    │
+ *            │ Sync complete               ▲  │          │
+ *            ▼                             │  │Watch     │
+ *     ┌─────────────┐  Watch broken/   ────┘  │healthy   │
+ *     │  WATCHING   │── Disconnect            │          │
+ *     └──────┬──────┘◄────────────────────────┘          │                                    │
  *            │         Max errors      ┌────────────┐    │
  *            │────────────────────────►│ RECOVERING │────┤
  *            │                         └────────────┘    │

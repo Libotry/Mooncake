@@ -130,6 +130,21 @@ StateTransitionResult StandbyStateMachine::ValidateTransition(
                     result.allowed = true;
                     result.new_state = StandbyState::SYNCING;
                     break;
+                case StandbyEvent::WATCH_HEALTHY:
+                    // Watch successfully re-established after reconnect
+                    result.allowed = true;
+                    result.new_state = StandbyState::WATCHING;
+                    break;
+                case StandbyEvent::RECOVERY_SUCCESS:
+                    // Missed entries synced — ready to watch again
+                    result.allowed = true;
+                    result.new_state = StandbyState::WATCHING;
+                    break;
+                case StandbyEvent::RECOVERY_FAILED:
+                    // Sync failed — stay in RECONNECTING and retry
+                    result.allowed = true;
+                    result.new_state = StandbyState::RECONNECTING;
+                    break;
                 case StandbyEvent::MAX_ERRORS_REACHED:
                 case StandbyEvent::FATAL_ERROR:
                     result.allowed = true;
