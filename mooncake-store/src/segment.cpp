@@ -874,4 +874,33 @@ bool ScopedSegmentAccess::ExistsSegmentName(
     return it != segment_manager_->client_by_name_.end();
 }
 
+bool SegmentManager::HasSegmentByEndpoint(
+    const std::string& te_endpoint) const {
+    std::shared_lock<std::shared_mutex> lock(segment_mutex_);
+    for (const auto& [uuid, mounted_segment] : mounted_segments_) {
+        if (mounted_segment.status != SegmentStatus::OK) {
+            continue;
+        }
+        if (mounted_segment.buf_allocator &&
+            mounted_segment.buf_allocator->getTransportEndpoint() ==
+                te_endpoint) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SegmentManager::GetSegmentBasicInfo(const UUID& segment_id,
+                                        std::string& segment_name,
+                                        std::string& te_endpoint) const {
+    std::shared_lock<std::shared_mutex> lock(segment_mutex_);
+    auto it = mounted_segments_.find(segment_id);
+    if (it != mounted_segments_.end()) {
+        segment_name = it->second.segment.name;
+        te_endpoint = it->second.segment.te_endpoint;
+        return true;
+    }
+    return false;
+}
+
 }  // namespace mooncake

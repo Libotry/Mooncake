@@ -151,6 +151,15 @@ bool OpLogApplier::ApplyOpLogEntry(const OpLogEntry& entry) {
         case OpType::REMOVE:
             ApplyRemove(entry);
             break;
+        case OpType::SEGMENT_MOUNT:
+            ApplySegmentMount(entry);
+            break;
+        case OpType::SEGMENT_UNMOUNT:
+            ApplySegmentUnmount(entry);
+            break;
+        case OpType::SEGMENT_UPDATE:
+            ApplySegmentUpdate(entry);
+            break;
         default:
             LOG(ERROR) << "OpLogApplier: unsupported op_type="
                        << static_cast<int>(entry.op_type)
@@ -296,6 +305,15 @@ size_t OpLogApplier::ProcessPendingEntries() {
             case OpType::REMOVE:
                 ApplyRemove(entry_copy);
                 break;
+            case OpType::SEGMENT_MOUNT:
+                ApplySegmentMount(entry_copy);
+                break;
+            case OpType::SEGMENT_UNMOUNT:
+                ApplySegmentUnmount(entry_copy);
+                break;
+            case OpType::SEGMENT_UPDATE:
+                ApplySegmentUpdate(entry_copy);
+                break;
             default:
                 LOG(ERROR) << "OpLogApplier: unsupported op_type in pending entry";
                 break;
@@ -402,7 +420,10 @@ OpLogApplier::GapResolveResult OpLogApplier::TryResolveGapsOnceForPromotion(
         }
         r.fetched++;
 
-        // Apply policy: only delete/revoke; drop PUT_END.
+        // Apply policy:
+        // - REMOVE/PUT_REVOKE: apply delete to clean up stale metadata
+        // - SEGMENT_MOUNT/UNMOUNT/UPDATE: apply to maintain segment registry
+        // - PUT_END and others: drop to avoid resurrecting stale state
         if (e.op_type == OpType::REMOVE) {
             ApplyRemove(e);
             r.applied_deletes++;
@@ -411,8 +432,17 @@ OpLogApplier::GapResolveResult OpLogApplier::TryResolveGapsOnceForPromotion(
             ApplyPutRevoke(e);
             r.applied_deletes++;
             successfully_processed.push_back(seq);
+        } else if (e.op_type == OpType::SEGMENT_MOUNT) {
+            ApplySegmentMount(e);
+            successfully_processed.push_back(seq);
+        } else if (e.op_type == OpType::SEGMENT_UNMOUNT) {
+            ApplySegmentUnmount(e);
+            successfully_processed.push_back(seq);
+        } else if (e.op_type == OpType::SEGMENT_UPDATE) {
+            ApplySegmentUpdate(e);
+            successfully_processed.push_back(seq);
         } else {
-            // PUT_END or others: mark as processed (dropped) so we don't retry.
+            // PUT_END and others: mark as processed (dropped) so we don't retry.
             successfully_processed.push_back(seq);
         }
     }
@@ -512,6 +542,72 @@ void OpLogApplier::ApplyRemove(const OpLogEntry& entry) {
         VLOG(1) << "OpLogApplier: applied REMOVE, key=" << entry.object_key
                 << ", sequence_id=" << entry.sequence_id;
     }
+}
+
+void OpLogApplier::ApplySegmentMount(const OpLogEntry& entry) {
+    // Payload contains JSON serialized SegmentMountOp
+    if (entry.payload.empty()) {
+        LOG(WARNING) << "OpLogApplier: SEGMENT_MOUNT without payload, endpoint="
+                     << entry.object_key << ", sequence_id=" << entry.sequence_id;
+        return;
+    }
+
+    // Deserialize the payload
+    SegmentMountOp op;
+    auto result = struct_pack::deserialize_to(op, entry.payload);
+    if (result != struct_pack::errc::ok) {
+        LOG(ERROR) << "OpLogApplier: failed to deserialize SEGMENT_MOUNT payload, endpoint="
+                   << entry.object_key << ", sequence_id=" << entry.sequence_id
+                   << ", error_code=" << static_cast<int>(result);
+        return;
+    }
+
+    StandbySegmentInfo info;
+    info.segment_name = op.segment_name;
+    info.transport_endpoint = op.transport_endpoint;
+    info.capacity = op.capacity;
+    info.is_memory_segment = op.is_memory_segment;
+    info.file_path = op.file_path;
+
+    segment_registry_.OnSegmentMount(info);
+    VLOG(1) << "OpLogApplier: applied SEGMENT_MOUNT, endpoint=" << entry.object_key
+            << ", sequence_id=" << entry.sequence_id;
+}
+
+void OpLogApplier::ApplySegmentUnmount(const OpLogEntry& entry) {
+    // For SEGMENT_UNMOUNT, the transport_endpoint is stored in object_key
+    // (segment events use object_key field to store endpoint for lookup)
+    segment_registry_.OnSegmentUnmount(entry.object_key);
+    VLOG(1) << "OpLogApplier: applied SEGMENT_UNMOUNT, endpoint=" << entry.object_key
+            << ", sequence_id=" << entry.sequence_id;
+}
+
+void OpLogApplier::ApplySegmentUpdate(const OpLogEntry& entry) {
+    // Payload contains JSON serialized SegmentUpdateOp
+    if (entry.payload.empty()) {
+        LOG(WARNING) << "OpLogApplier: SEGMENT_UPDATE without payload, endpoint="
+                     << entry.object_key << ", sequence_id=" << entry.sequence_id;
+        return;
+    }
+
+    // Deserialize the payload
+    SegmentUpdateOp op;
+    auto result = struct_pack::deserialize_to(op, entry.payload);
+    if (result != struct_pack::errc::ok) {
+        LOG(ERROR) << "OpLogApplier: failed to deserialize SEGMENT_UPDATE payload, endpoint="
+                   << entry.object_key << ", sequence_id=" << entry.sequence_id
+                   << ", error_code=" << static_cast<int>(result);
+        return;
+    }
+
+    // For updates, we need to get the existing segment and update it
+    auto existing = segment_registry_.GetSegment(entry.object_key);
+    if (existing) {
+        existing->capacity = op.capacity;
+        segment_registry_.OnSegmentMount(*existing);
+    }
+    VLOG(1) << "OpLogApplier: applied SEGMENT_UPDATE, endpoint=" << entry.object_key
+            << ", sequence_id=" << entry.sequence_id;
 }
 
 bool OpLogApplier::RequestMissingOpLog(uint64_t missing_seq_id) {

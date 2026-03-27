@@ -26,6 +26,13 @@ enum class OpType : uint8_t {
     // Deprecated: LEASE_RENEW is intentionally not recorded in OpLog in the
     // current etcd-based hot-standby design (Standby relies on Primary DELETE operations).
     LEASE_RENEW = 4,
+
+    // Segment operations (for HA sync of segment mount/unmount)
+    // These allow Standby to maintain a real-time segment registry
+    // so that Promote can recover segment information properly.
+    SEGMENT_MOUNT = 5,
+    SEGMENT_UNMOUNT = 6,
+    SEGMENT_UPDATE = 7,
 };
 
 // A single operation log entry.
@@ -39,6 +46,42 @@ struct OpLogEntry {
     std::string payload;         // Serialized extra data (optional)
     uint32_t checksum{0};        // Checksum of payload (implementation-defined)
     uint32_t prefix_hash{0};     // Hash of the entire key (for verification and optimization)
+};
+
+/**
+ * @brief Segment mount operation payload for OpLog.
+ *
+ * This is serialized to JSON and stored in OpLogEntry.payload when
+ * OpType::SEGMENT_MOUNT is recorded.
+ */
+struct SegmentMountOp {
+    std::string segment_name;          // Segment name
+    std::string transport_endpoint;     // Transport endpoint (ip:port)
+    uint64_t capacity{0};              // Segment capacity in bytes
+    bool is_memory_segment{false};      // true = MEMORY segment, false = DISK segment
+    std::string file_path;             // For DISK segments only: path to data file
+};
+
+/**
+ * @brief Segment unmount operation payload for OpLog.
+ *
+ * This is serialized to JSON and stored in OpLogEntry.payload when
+ * OpType::SEGMENT_UNMOUNT is recorded.
+ */
+struct SegmentUnmountOp {
+    std::string segment_name;          // Segment name
+    std::string transport_endpoint;     // Transport endpoint (ip:port)
+};
+
+/**
+ * @brief Segment update operation payload for OpLog.
+ *
+ * Used for updates like capacity changes, status changes, etc.
+ */
+struct SegmentUpdateOp {
+    std::string segment_name;          // Segment name
+    std::string transport_endpoint;     // Transport endpoint (ip:port)
+    uint64_t capacity{0};              // Updated capacity in bytes
 };
 
 /**

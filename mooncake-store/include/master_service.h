@@ -1163,6 +1163,12 @@ class MasterService {
     std::unordered_map<std::string, std::shared_ptr<BufferAllocatorBase>>
         standby_allocator_keepalive_;
 
+    // After standby promotion, track endpoints that correspond to segments
+    // that were NOT registered. These replicas are invalid and should be
+    // filtered out in GetReplicaList to prevent clients from accessing
+    // non-existent segment endpoints.
+    std::unordered_set<std::string> invalid_replica_endpoints_;
+
     // Operation log manager for hot-standby replication. It records
     // state-changing operations so that a standby master can replay them.
     OpLogManager oplog_manager_;

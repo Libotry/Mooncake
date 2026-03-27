@@ -388,8 +388,14 @@ void MasterService::RestoreFromStandbySnapshot(
     // only holds a weak_ptr to allocator, so without this keepalive map the
     // allocator would expire immediately and transport_endpoint_ would be lost.
     standby_allocator_keepalive_.clear();
+
+    // Track endpoints that correspond to segments that are NOT registered.
+    // These replicas are invalid and will be filtered out in GetReplicaList.
+    invalid_replica_endpoints_.clear();
+    std::unordered_set<std::string> known_endpoints;  // Use unordered_set to deduplicate
+
     auto get_keepalive_allocator =
-        [this](const std::string& transport_endpoint)
+        [this, &known_endpoints](const std::string& transport_endpoint)
         -> std::shared_ptr<BufferAllocatorBase> {
         auto it = standby_allocator_keepalive_.find(transport_endpoint);
         if (it != standby_allocator_keepalive_.end()) {
@@ -412,8 +418,18 @@ void MasterService::RestoreFromStandbySnapshot(
         for (const auto& rd : sm.replicas) {
             if (rd.is_memory_replica()) {
                 const auto& bd = rd.get_memory_descriptor().buffer_descriptor;
+                // Collect endpoints for later segment validation
+                if (!bd.transport_endpoint_.empty()) {
+                    known_endpoints.insert(bd.transport_endpoint_);
+                }
                 replicas.emplace_back(
                     ReplicaFromDescriptor(rd, get_keepalive_allocator(bd.transport_endpoint_)));
+            } else if (rd.is_local_disk_replica()) {
+                const auto& ldd = rd.get_local_disk_descriptor();
+                if (!ldd.transport_endpoint.empty()) {
+                    known_endpoints.insert(ldd.transport_endpoint);
+                }
+                replicas.emplace_back(ReplicaFromDescriptor(rd, nullptr));
             } else {
                 replicas.emplace_back(ReplicaFromDescriptor(rd, nullptr));
             }
@@ -443,6 +459,19 @@ void MasterService::RestoreFromStandbySnapshot(
         shard->processing_keys.erase(key);
 
         restored++;
+    }
+
+    // After restoring all objects, identify endpoints whose segments are not
+    // registered. These replicas are invalid and should be filtered out in
+    // GetReplicaList to prevent clients from accessing non-existent segment
+    // endpoints.
+    for (const auto& endpoint : known_endpoints) {
+        if (!segment_manager_.HasSegmentByEndpoint(endpoint)) {
+            invalid_replica_endpoints_.insert(endpoint);
+            LOG(WARNING) << "Standby snapshot restored with invalid replica "
+                         << "endpoint=" << endpoint
+                         << ": corresponding segment is not registered";
+        }
     }
 
     LOG(INFO) << "Restored metadata from standby snapshot: restored_keys="
@@ -778,6 +807,23 @@ auto MasterService::MountSegment(const Segment& segment, const UUID& client_id)
     } else if (err != ErrorCode::OK) {
         return tl::make_unexpected(err);
     }
+
+    // Record segment mount event to OpLog for HA sync.
+    // Standby will maintain a segment registry to enable proper recovery after promotion.
+    if (enable_ha_) {
+        SegmentMountOp mount_op;
+        mount_op.segment_name = segment.name;
+        mount_op.transport_endpoint = segment.te_endpoint;
+        mount_op.capacity = segment.size;
+        mount_op.is_memory_segment = true;  // MountSegment is for memory segments
+        mount_op.file_path.clear();          // No file path for memory segments
+
+        auto serialized = struct_pack::serialize(mount_op);
+        std::string payload(serialized.begin(), serialized.end());
+        // Use segment's te_endpoint as the key for segment event lookup
+        AppendOpLogAndNotify(OpType::SEGMENT_MOUNT, segment.te_endpoint, payload);
+    }
+
     return {};
 }
 
@@ -898,8 +944,17 @@ auto MasterService::UnmountSegment(const UUID& segment_id,
                                    const UUID& client_id)
     -> tl::expected<void, ErrorCode> {
     size_t metrics_dec_capacity = 0;  // to update the metrics
+    std::string segment_name;
+    std::string te_endpoint;
 
     std::shared_lock<std::shared_mutex> shared_lock(SNAPSHOT_MUTEX);
+
+    // 0. Get segment info before unmounting (needed for OpLog)
+    if (!segment_manager_.GetSegmentBasicInfo(segment_id, segment_name, te_endpoint)) {
+        // Segment not found - return OK because unmount is idempotent
+        return {};
+    }
+
     // 1. Prepare to unmount the segment by deleting its allocator
     {
         ScopedSegmentAccess segment_access =
@@ -926,6 +981,19 @@ auto MasterService::UnmountSegment(const UUID& segment_id,
     if (err != ErrorCode::OK) {
         return tl::make_unexpected(err);
     }
+
+    // 4. Record segment unmount event to OpLog for HA sync.
+    // Standby will remove this segment from its registry.
+    if (enable_ha_ && !te_endpoint.empty()) {
+        SegmentUnmountOp unmount_op;
+        unmount_op.segment_name = segment_name;
+        unmount_op.transport_endpoint = te_endpoint;
+
+        auto serialized = struct_pack::serialize(unmount_op);
+        std::string payload(serialized.begin(), serialized.end());
+        AppendOpLogAndNotify(OpType::SEGMENT_UNMOUNT, te_endpoint, payload);
+    }
+
     return {};
 }
 
@@ -1304,6 +1372,32 @@ auto MasterService::GetReplicaList(const std::string& key)
         &Replica::fn_is_completed, [&replica_list](const Replica& replica) {
             replica_list.emplace_back(replica.get_descriptor());
         });
+
+    // Filter out replicas whose segment endpoints are not registered.
+    // This can happen after standby promotion when segment information was
+    // not preserved in the standby snapshot.
+    if (!invalid_replica_endpoints_.empty()) {
+        std::vector<Replica::Descriptor> filtered_replicas;
+        filtered_replicas.reserve(replica_list.size());
+        for (const auto& rd : replica_list) {
+            std::string endpoint;
+            if (rd.is_memory_replica()) {
+                endpoint = rd.get_memory_descriptor().buffer_descriptor.transport_endpoint_;
+            } else if (rd.is_local_disk_replica()) {
+                endpoint = rd.get_local_disk_descriptor().transport_endpoint;
+            }
+            // If endpoint is empty or not in invalid list, keep the replica
+            if (endpoint.empty() ||
+                invalid_replica_endpoints_.find(endpoint) ==
+                    invalid_replica_endpoints_.end()) {
+                filtered_replicas.push_back(rd);
+            } else {
+                VLOG(1) << "Filtering out replica with invalid endpoint="
+                        << endpoint;
+            }
+        }
+        replica_list = std::move(filtered_replicas);
+    }
 
     if (replica_list.empty()) {
         LOG(WARNING) << "key=" << key << ", error=replica_not_ready";

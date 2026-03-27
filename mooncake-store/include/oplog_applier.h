@@ -115,6 +115,24 @@ class OpLogApplier {
     void ApplyRemove(const OpLogEntry& entry);
 
     /**
+     * @brief Apply SEGMENT_MOUNT operation
+     * @param entry OpLog entry
+     */
+    void ApplySegmentMount(const OpLogEntry& entry);
+
+    /**
+     * @brief Apply SEGMENT_UNMOUNT operation
+     * @param entry OpLog entry
+     */
+    void ApplySegmentUnmount(const OpLogEntry& entry);
+
+    /**
+     * @brief Apply SEGMENT_UPDATE operation
+     * @param entry OpLog entry
+     */
+    void ApplySegmentUpdate(const OpLogEntry& entry);
+
+    /**
      * @brief Request missing OpLog entry from etcd
      * @param missing_seq_id Missing sequence ID
      * @return true if entry was found and applied, false otherwise
@@ -128,6 +146,9 @@ class OpLogApplier {
     void ScheduleWaitForMissingEntries(uint64_t missing_seq_id);
 
     MetadataStore* metadata_store_;
+
+    // Segment registry for tracking segment mount/unmount on Standby
+    StandbySegmentRegistry segment_registry_;
 
     // EtcdOpLogStore for requesting missing OpLog entries (optional)
     std::string cluster_id_;

@@ -56,6 +56,89 @@ struct MetadataPayload {
 };
 
 /**
+ * @brief Segment information stored on Standby for HA recovery.
+ *
+ * This structure contains essential segment information needed by Standby
+ * to restore segment registration after promotion. For MEMORY segments,
+ * the data cannot be recovered (memory is volatile), but the segment
+ * registration allows proper error handling (SEGMENT_NEEDS_REBUILD).
+ * For DISK segments, the file_path allows full data recovery.
+ */
+struct StandbySegmentInfo {
+    std::string segment_name;           // Segment name
+    std::string transport_endpoint;     // Transport endpoint (ip:port)
+    uint64_t capacity{0};             // Segment capacity in bytes
+    bool is_memory_segment{false};     // true = MEMORY segment, false = DISK segment
+    std::string file_path;             // For DISK segments: path to data file
+
+    StandbySegmentInfo() = default;
+
+    StandbySegmentInfo(const std::string& name,
+                       const std::string& endpoint,
+                       uint64_t cap,
+                       bool is_mem,
+                       const std::string& path = std::string())
+        : segment_name(name),
+          transport_endpoint(endpoint),
+          capacity(cap),
+          is_memory_segment(is_mem),
+          file_path(path) {}
+};
+
+/**
+ * @brief In-memory segment registry for Standby.
+ *
+ * Maintains a real-time view of segments on Standby by applying
+ * SEGMENT_MOUNT/SEGMENT_UNMOUNT OpLog events. This allows the
+ * Standby to have accurate segment information when promoted.
+ *
+ * Thread-safe using shared_mutex for concurrent reads.
+ */
+class StandbySegmentRegistry {
+   public:
+    StandbySegmentRegistry() = default;
+
+    // Disallow copy
+    StandbySegmentRegistry(const StandbySegmentRegistry&) = delete;
+    StandbySegmentRegistry& operator=(const StandbySegmentRegistry&) = delete;
+
+    /**
+     * @brief Register a segment (on SEGMENT_MOUNT)
+     */
+    void OnSegmentMount(const StandbySegmentInfo& info);
+
+    /**
+     * @brief Unregister a segment (on SEGMENT_UNMOUNT)
+     */
+    void OnSegmentUnmount(const std::string& transport_endpoint);
+
+    /**
+     * @brief Check if a segment exists by transport endpoint
+     */
+    bool HasSegment(const std::string& transport_endpoint) const;
+
+    /**
+     * @brief Get segment info by transport endpoint
+     */
+    std::optional<StandbySegmentInfo> GetSegment(
+        const std::string& transport_endpoint) const;
+
+    /**
+     * @brief Get all registered segments
+     */
+    std::vector<StandbySegmentInfo> GetAllSegments() const;
+
+    /**
+     * @brief Clear all segment registrations
+     */
+    void Clear();
+
+   private:
+    mutable std::shared_mutex mutex_;
+    std::unordered_map<std::string, StandbySegmentInfo> segments_;
+};
+
+/**
  * @brief Abstract interface for metadata storage on Standby
  *
  * This interface provides basic operations for storing and managing object metadata.

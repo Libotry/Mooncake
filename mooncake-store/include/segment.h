@@ -276,6 +276,27 @@ class SegmentManager {
 
     SegmentView getView() const { return SegmentView(this); }
 
+    /**
+     * @brief Check if a segment exists with the given transport endpoint.
+     *        This is used after standby promotion to verify if replicas
+     *        have valid segment backing.
+     * @param te_endpoint The transport endpoint (ip:port) to check
+     * @return true if a segment with this endpoint exists, false otherwise
+     */
+    bool HasSegmentByEndpoint(const std::string& te_endpoint) const;
+
+    /**
+     * @brief Get basic segment info (name and te_endpoint) by segment ID.
+     *        This is used for OpLog recording before segment unmount.
+     * @param segment_id The segment UUID
+     * @param[out] segment_name The segment's logical name
+     * @param[out] te_endpoint The segment's transport endpoint
+     * @return true if segment found, false otherwise
+     */
+    bool GetSegmentBasicInfo(const UUID& segment_id,
+                            std::string& segment_name,
+                            std::string& te_endpoint) const;
+
    private:
     mutable std::shared_mutex segment_mutex_;
     std::shared_ptr<AllocationStrategy> allocation_strategy_;

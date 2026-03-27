@@ -244,6 +244,11 @@ enum class ErrorCode : int32_t {
     UNAVAILABLE_IN_CURRENT_MODE =
         -1011,  ///< Request cannot be done in current mode.
 
+    // Segment HA errors (Range: -1050 to -1059)
+    // Returned to clients when a memory segment needs to be rebuilt
+    // after standby promotion. Client should re-PUT the object.
+    SEGMENT_NEEDS_REBUILD = -1050,  ///< Segment data needs rebuild (memory segment promoted without full sync).
+
     // FILE errors (Range: -1100 to -1199)
     FILE_NOT_FOUND = -1100,       ///< File not found.
     FILE_OPEN_FAIL = -1101,       ///< Error open file or write to a exist file.
