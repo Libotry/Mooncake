@@ -87,7 +87,8 @@ ErrorCode ScopedSegmentAccess::MountSegment(const Segment& segment,
 }
 
 ErrorCode ScopedSegmentAccess::MountLocalDiskSegment(const UUID& client_id,
-                                                     bool enable_offloading) {
+                                                     bool enable_offloading,
+                                                     const std::string& endpoint) {
     auto exist_segment_it =
         segment_manager_->client_local_disk_segment_.find(client_id);
     if (exist_segment_it !=
@@ -97,7 +98,44 @@ ErrorCode ScopedSegmentAccess::MountLocalDiskSegment(const UUID& client_id,
         return ErrorCode::SEGMENT_ALREADY_EXISTS;
     }
     segment_manager_->client_local_disk_segment_.emplace(
-        client_id, std::make_shared<LocalDiskSegment>(enable_offloading));
+        client_id, std::make_shared<LocalDiskSegment>(enable_offloading, endpoint));
+    // Also register endpoint -> client_id mapping for HasSegmentByEndpoint
+    segment_manager_->endpoint_to_client_id_.emplace(endpoint, client_id);
+    return ErrorCode::OK;
+}
+
+ErrorCode ScopedSegmentAccess::RegisterStandbyMemorySegment(
+    const StandbySegmentInfo& info) {
+    // For MEMORY segments, data cannot be recovered after promote (memory is volatile).
+    // Create a dummy segment with DummyBufferAllocator so that:
+    // 1. HasSegmentByEndpoint returns true (replica won't be filtered as invalid)
+    // 2. Client access will fail gracefully (allocate returns nullptr)
+    // Generate a new segment_id since StandbySegmentInfo doesn't have one
+    UUID segment_id = generate_uuid();
+
+    // Create DummyBufferAllocator
+    auto allocator = std::make_shared<DummyBufferAllocator>(
+        info.segment_name, info.transport_endpoint);
+
+    // Build Segment object with base=0 (real memory address is lost)
+    Segment segment;
+    segment.id = segment_id;
+    segment.name = info.segment_name;
+    segment.base = 0;  // Real memory address is lost after promote
+    segment.size = info.capacity;
+    segment.te_endpoint = info.transport_endpoint;
+
+    // Add to mounted_segments_ with UNDEFINED status (not OK, so not used for allocation)
+    // But HasSegmentByEndpoint will still find it by endpoint
+    MountedSegment mounted;
+    mounted.segment = segment;
+    mounted.status = SegmentStatus::UNDEFINED;  // Mark as not OK for allocation
+    mounted.buf_allocator = allocator;
+    segment_manager_->mounted_segments_.emplace(segment_id, mounted);
+
+    LOG(INFO) << "Registered standby memory segment: name=" << info.segment_name
+              << ", endpoint=" << info.transport_endpoint
+              << ", new_segment_id=" << segment_id;
     return ErrorCode::OK;
 }
 
@@ -877,13 +915,21 @@ bool ScopedSegmentAccess::ExistsSegmentName(
 bool SegmentManager::HasSegmentByEndpoint(
     const std::string& te_endpoint) const {
     std::shared_lock<std::shared_mutex> lock(segment_mutex_);
+    // Check mounted_segments_ for any segment with matching endpoint.
+    // For standby MEMORY segments (status=UNDEFINED), they are registered here
+    // so that HasSegmentByEndpoint returns true and replicas are not filtered.
+    // For standby DISK segments, they go to client_local_disk_segment_ instead.
     for (const auto& [uuid, mounted_segment] : mounted_segments_) {
-        if (mounted_segment.status != SegmentStatus::OK) {
-            continue;
-        }
         if (mounted_segment.buf_allocator &&
             mounted_segment.buf_allocator->getTransportEndpoint() ==
                 te_endpoint) {
+            return true;
+        }
+    }
+    // Also check DISK segments in client_local_disk_segment_
+    // They are registered via MountLocalDiskSegment with their endpoint
+    for (const auto& [client_id, disk_segment] : client_local_disk_segment_) {
+        if (disk_segment->getTransportEndpoint() == te_endpoint) {
             return true;
         }
     }

@@ -9,6 +9,7 @@
 #include <deque>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
@@ -117,8 +118,9 @@ class MasterService {
     // NOTE: This is used only on the node that was running HotStandbyService
     // right before it was promoted to leader.
     void RestoreFromStandbySnapshot(
-        const std::vector<std::pair<std::string, StandbyObjectMetadata>>& snapshot,
-        uint64_t initial_oplog_sequence_id);
+        const std::vector<std::pair<std::string, StandbyObjectMetadata>>& objects,
+        uint64_t initial_oplog_sequence_id,
+        const std::vector<StandbySegmentInfo>& segments);
 
         // Export the current in-memory metadata state into StandbyObjectMetadata.
         // This is primarily used by standby snapshot bootstrap after restoring a
@@ -371,6 +373,14 @@ class MasterService {
      */
     auto MountLocalDiskSegment(const UUID& client_id, bool enable_offloading)
         -> tl::expected<void, ErrorCode>;
+
+    /**
+     * @brief Register a standby memory segment during promote.
+     *        MEMORY segment data cannot be recovered after promote (memory is volatile),
+     *        so this creates a dummy segment marked as NEEDS_REBUILD.
+     * @param info The standby segment info containing segment metadata.
+     */
+    ErrorCode RegisterStandbyMemorySegment(const StandbySegmentInfo& info);
 
     /**
      * @brief Heartbeat call to collect object-level statistics and retrieve the
@@ -1168,6 +1178,12 @@ class MasterService {
     // filtered out in GetReplicaList to prevent clients from accessing
     // non-existent segment endpoints.
     std::unordered_set<std::string> invalid_replica_endpoints_;
+
+    // Segment information restored from StandbySnapshot.
+    // Maps transport_endpoint -> StandbySegmentInfo for quick lookup.
+    // This allows GetReplicaList to determine if a segment is a DISK segment
+    // (recoverable) or MEMORY segment (needs rebuild).
+    std::map<std::string, StandbySegmentInfo> standby_segments_;
 
     // Operation log manager for hot-standby replication. It records
     // state-changing operations so that a standby master can replay them.

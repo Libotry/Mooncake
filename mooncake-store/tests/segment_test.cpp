@@ -464,12 +464,12 @@ TEST_F(SegmentTest, QuerySegments) {
 TEST_F(SegmentTest, MountLocalDiskSegmentSuccess) {
     SegmentManager segment_manager;
     // Create a valid local disk segment and client ID
-    auto segment = std::make_shared<LocalDiskSegment>(true);
+    auto segment = std::make_shared<LocalDiskSegment>(true, "test_endpoint");
     UUID client_id = generate_uuid();
 
     // Get segment access and attempt to mount
     auto segment_access = segment_manager.getSegmentAccess();
-    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id, true),
+    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id, true, "test_endpoint"),
               ErrorCode::OK);
 
     // Verify segment is properly mounted
@@ -485,30 +485,30 @@ TEST_F(SegmentTest, MountLocalDiskSegmentSuccess) {
 TEST_F(SegmentTest, MountLocalDiskSegmentDuplicate) {
     SegmentManager segment_manager;
     // Create a valid segment and client ID
-    auto segment = std::make_shared<LocalDiskSegment>(true);
+    auto segment = std::make_shared<LocalDiskSegment>(true, "test_endpoint");
     UUID client_id = generate_uuid();
 
     // Get segment access and mount first time
     auto segment_access = segment_manager.getSegmentAccess();
-    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id, true),
+    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id, true, "test_endpoint"),
               ErrorCode::OK);
 
     // Verify first mount
     ValidateMountedLocalDiskSegments(segment_manager, segment, client_id);
 
     // Test duplicate mount - mount the same segment again
-    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id, true),
+    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id, true, "test_endpoint"),
               ErrorCode::SEGMENT_ALREADY_EXISTS);
 
     // Verify state remains the same after duplicate mount
     ValidateMountedLocalDiskSegments(segment_manager, segment, client_id);
 
     // Create a new segment with same name but different ID
-    auto segment2 = std::make_shared<LocalDiskSegment>(true);
+    auto segment2 = std::make_shared<LocalDiskSegment>(true, "test_endpoint2");
     UUID client_id2 = generate_uuid();
 
     // Mount the second segment
-    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id2, true),
+    ASSERT_EQ(segment_access.MountLocalDiskSegment(client_id2, true, "test_endpoint2"),
               ErrorCode::OK);
 
     // Verify both segments are mounted correctly

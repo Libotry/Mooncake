@@ -86,6 +86,22 @@ struct StandbySegmentInfo {
 };
 
 /**
+ * @brief Complete snapshot structure for Standby to Primary promotion.
+ *
+ * This structure contains both:
+ * - segments: All registered segment information (from OpLog SEGMENT_MOUNT events)
+ * - objects: All object metadata (from OpLog PUT_END events)
+ *
+ * This snapshot is used during promotion to restore the complete state
+ * of the Standby node into the new Primary.
+ */
+struct StandbySnapshot {
+    uint64_t oplog_sequence_id{0};  // Last OpLog sequence ID at snapshot time
+    std::vector<StandbySegmentInfo> segments;  // All registered segments
+    std::vector<std::pair<std::string, StandbyObjectMetadata>> objects;  // All objects
+};
+
+/**
  * @brief In-memory segment registry for Standby.
  *
  * Maintains a real-time view of segments on Standby by applying

@@ -88,6 +88,12 @@ class OpLogApplier {
     };
     GapResolveResult TryResolveGapsOnceForPromotion(size_t max_ids = 1024);
 
+    /**
+     * @brief Get the segment registry for exporting segment information
+     * @return Reference to the StandbySegmentRegistry
+     */
+    const StandbySegmentRegistry& GetSegmentRegistry() const { return segment_registry_; }
+
    private:
     /**
      * @brief Check if the entry's sequence order is valid

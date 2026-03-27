@@ -535,15 +535,20 @@ uint64_t HotStandbyService::GetLatestAppliedSequenceId() const {
     return applied_seq_id_.load();
 }
 
-bool HotStandbyService::ExportMetadataSnapshot(
-    std::vector<std::pair<std::string, StandbyObjectMetadata>>& out) const {
+StandbySnapshot HotStandbyService::ExportMetadataSnapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!metadata_store_) {
-        out.clear();
-        return false;
+    StandbySnapshot snapshot;
+
+    if (metadata_store_) {
+        metadata_store_->Snapshot(snapshot.objects);
     }
-    metadata_store_->Snapshot(out);
-    return true;
+
+    // Get segments from OpLogApplier's segment registry
+    if (oplog_applier_) {
+        snapshot.segments = oplog_applier_->GetSegmentRegistry().GetAllSegments();
+    }
+
+    return snapshot;
 }
 
 void HotStandbyService::SetSnapshotProvider(std::unique_ptr<SnapshotProvider> provider) {

@@ -34,8 +34,9 @@ class WrappedMasterService {
 
     // Restore metadata and OpLog sequence from a promoted Standby (fast failover).
     void RestoreFromStandby(
-        const std::vector<std::pair<std::string, StandbyObjectMetadata>>& snapshot,
-        uint64_t initial_oplog_sequence_id);
+        const std::vector<std::pair<std::string, StandbyObjectMetadata>>& objects,
+        uint64_t initial_oplog_sequence_id,
+        const std::vector<StandbySegmentInfo>& segments);
 
     tl::expected<bool, ErrorCode> ExistKey(const std::string& key);
 

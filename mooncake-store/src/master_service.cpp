@@ -74,33 +74,6 @@ std::string BuildSnapshotIndexContent(
 }
 }  // namespace
 
-namespace {
-
-// A minimal allocator implementation used only to keep AllocatedBuffer handles
-// "valid" after standby promotion. It does NOT own memory.
-class DummyBufferAllocator final : public BufferAllocatorBase {
-   public:
-    DummyBufferAllocator(std::string segment_name, std::string transport_endpoint)
-        : segment_name_(std::move(segment_name)),
-          transport_endpoint_(std::move(transport_endpoint)) {}
-
-    std::unique_ptr<AllocatedBuffer> allocate(size_t /*size*/) override {
-        return nullptr;
-    }
-    void deallocate(AllocatedBuffer* /*handle*/) override {
-        // no-op: we don't own memory
-    }
-    size_t capacity() const override { return kAllocatorUnknownFreeSpace; }
-    size_t size() const override { return 0; }
-    std::string getSegmentName() const override { return segment_name_; }
-    std::string getTransportEndpoint() const override { return transport_endpoint_; }
-    size_t getLargestFreeRegion() const override { return kAllocatorUnknownFreeSpace; }
-
-   private:
-    std::string segment_name_;
-    std::string transport_endpoint_;
-};
-
 static Replica ReplicaFromDescriptor(
     const Replica::Descriptor& desc,
     const std::shared_ptr<BufferAllocatorBase>& allocator_keepalive) {
@@ -366,8 +339,9 @@ auto MasterService::AppendOpLogAndNotifyDurable(OpType type, const std::string& 
 }
 
 void MasterService::RestoreFromStandbySnapshot(
-    const std::vector<std::pair<std::string, StandbyObjectMetadata>>& snapshot,
-    uint64_t initial_oplog_sequence_id) {
+    const std::vector<std::pair<std::string, StandbyObjectMetadata>>& objects,
+    uint64_t initial_oplog_sequence_id,
+    const std::vector<StandbySegmentInfo>& segments) {
     // 1) Ensure OpLog sequence continues without regression after failover.
     // Prefer reading the true max seq from etcd (stronger than standby_last_seq),
     // fall back to caller-provided initial_oplog_sequence_id.
@@ -383,7 +357,39 @@ void MasterService::RestoreFromStandbySnapshot(
 #endif
     oplog_manager_.SetInitialSequenceId(start_seq);
 
-    // 2) Restore metadata entries.
+    // 2) Restore segment information from StandbySnapshot.
+    // Build a map of transport_endpoint -> StandbySegmentInfo for quick lookup.
+    // Also register segments with segment_manager_ so HasSegmentByEndpoint works.
+    standby_segments_.clear();
+    for (const auto& seg : segments) {
+        standby_segments_[seg.transport_endpoint] = seg;
+
+        // Register the segment with segment_manager_
+        if (seg.is_memory_segment) {
+            // MEMORY segment: data cannot be recovered, register as dummy
+            RegisterStandbyMemorySegment(seg);
+        } else {
+            // DISK segment: try to get client_id from client_by_name_, or generate new one
+            UUID client_id;
+            auto it = segment_manager_.client_by_name_.find(seg.segment_name);
+            if (it != segment_manager_.client_by_name_.end()) {
+                client_id = it->second;
+            } else {
+                // Generate new UUID - this DISK segment was not previously registered
+                client_id = generate_uuid();
+            }
+            // Call the internal method with endpoint for DISK segment
+            segment_manager_.getSegmentAccess().MountLocalDiskSegment(
+                client_id, false, seg.transport_endpoint);
+        }
+
+        LOG(INFO) << "Restored segment info from standby: endpoint=" << seg.transport_endpoint
+                  << ", name=" << seg.segment_name
+                  << ", is_memory=" << seg.is_memory_segment
+                  << ", file_path=" << (seg.file_path.empty() ? "(none)" : seg.file_path);
+    }
+
+    // 3) Restore metadata entries.
     // Keep dummy allocators alive for restored memory replicas. AllocatedBuffer
     // only holds a weak_ptr to allocator, so without this keepalive map the
     // allocator would expire immediately and transport_endpoint_ would be lost.
@@ -409,7 +415,7 @@ void MasterService::RestoreFromStandbySnapshot(
 
     const auto now = std::chrono::system_clock::now();
     size_t restored = 0;
-    for (const auto& kv : snapshot) {
+    for (const auto& kv : objects) {
         const std::string& key = kv.first;
         const StandbyObjectMetadata& sm = kv.second;
 
@@ -461,10 +467,10 @@ void MasterService::RestoreFromStandbySnapshot(
         restored++;
     }
 
-    // After restoring all objects, identify endpoints whose segments are not
-    // registered. These replicas are invalid and should be filtered out in
-    // GetReplicaList to prevent clients from accessing non-existent segment
-    // endpoints.
+    // 4) After restoring all objects, identify endpoints whose segments are not
+    // registered in segment_manager_. These replicas are invalid and should be
+    // filtered out in GetReplicaList to prevent clients from accessing non-existent
+    // segment endpoints.
     for (const auto& endpoint : known_endpoints) {
         if (!segment_manager_.HasSegmentByEndpoint(endpoint)) {
             invalid_replica_endpoints_.insert(endpoint);
@@ -475,7 +481,8 @@ void MasterService::RestoreFromStandbySnapshot(
     }
 
     LOG(INFO) << "Restored metadata from standby snapshot: restored_keys="
-              << restored << ", initial_oplog_sequence_id=" << initial_oplog_sequence_id;
+              << restored << ", restored_segments=" << segments.size()
+              << ", initial_oplog_sequence_id=" << initial_oplog_sequence_id;
 }
 
 void MasterService::ExportStandbySnapshot(
@@ -2398,7 +2405,7 @@ auto MasterService::MountLocalDiskSegment(const UUID& client_id,
     ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
 
     auto err =
-        segment_access.MountLocalDiskSegment(client_id, enable_offloading);
+        segment_access.MountLocalDiskSegment(client_id, enable_offloading, "");
     if (err == ErrorCode::SEGMENT_ALREADY_EXISTS) {
         // Return OK because this is an idempotent operation
         return {};
@@ -2427,6 +2434,12 @@ auto MasterService::OffloadObjectHeartbeat(const UUID& client_id,
         return std::move(local_disk_segment_it->second->offloading_objects);
     }
     return {};
+}
+
+ErrorCode MasterService::RegisterStandbyMemorySegment(
+    const StandbySegmentInfo& info) {
+    ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
+    return segment_access.RegisterStandbyMemorySegment(info);
 }
 
 auto MasterService::NotifyOffloadSuccess(

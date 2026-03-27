@@ -131,8 +131,8 @@ class HotStandbyService {
     // Export a point-in-time snapshot of all replicated metadata.
     // This is used by MasterServiceSupervisor to initialize the new Primary
     // after leader election (fast recovery).
-    bool ExportMetadataSnapshot(
-        std::vector<std::pair<std::string, StandbyObjectMetadata>>& out) const;
+    // Returns StandbySnapshot containing both segments and objects.
+    StandbySnapshot ExportMetadataSnapshot() const;
 
     // Inject a snapshot provider (from external snapshot implementation).
     void SetSnapshotProvider(std::unique_ptr<SnapshotProvider> provider);

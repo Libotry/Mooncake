@@ -71,10 +71,12 @@ WrappedMasterService::~WrappedMasterService() {
 }
 
 void WrappedMasterService::RestoreFromStandby(
-    const std::vector<std::pair<std::string, StandbyObjectMetadata>>& snapshot,
-    uint64_t initial_oplog_sequence_id) {
-    master_service_.RestoreFromStandbySnapshot(snapshot,
-                                               initial_oplog_sequence_id);
+    const std::vector<std::pair<std::string, StandbyObjectMetadata>>& objects,
+    uint64_t initial_oplog_sequence_id,
+    const std::vector<StandbySegmentInfo>& segments) {
+    master_service_.RestoreFromStandbySnapshot(objects,
+                                               initial_oplog_sequence_id,
+                                               segments);
 }
 
 void WrappedMasterService::init_http_server() {

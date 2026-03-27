@@ -13,6 +13,10 @@
 #include "types.h"
 
 namespace mooncake {
+
+// Forward declaration
+struct StandbySegmentInfo;
+
 /**
  * @brief Status of a mounted segment in master
  */
@@ -48,14 +52,18 @@ struct LocalDiskSegment {
     bool enable_offloading;
     std::unordered_map<std::string, int64_t> GUARDED_BY(offloading_mutex_)
         offloading_objects;
-    explicit LocalDiskSegment(bool enable_offloading)
-        : enable_offloading(enable_offloading) {}
+    std::string endpoint;  // Transport endpoint for this DISK segment
+
+    LocalDiskSegment(bool enable_offloading, std::string endpoint)
+        : enable_offloading(enable_offloading), endpoint(std::move(endpoint)) {}
 
     LocalDiskSegment(const LocalDiskSegment&) = delete;
     LocalDiskSegment& operator=(const LocalDiskSegment&) = delete;
 
     LocalDiskSegment(LocalDiskSegment&&) = delete;
     LocalDiskSegment& operator=(LocalDiskSegment&&) = delete;
+
+    const std::string& getTransportEndpoint() const { return endpoint; }
 };
 
 // Forward declarations
@@ -80,7 +88,16 @@ class ScopedSegmentAccess {
     ErrorCode MountSegment(const Segment& segment, const UUID& client_id);
 
     ErrorCode MountLocalDiskSegment(const UUID& client_id,
-                                    bool enable_offloading);
+                                    bool enable_offloading,
+                                    const std::string& endpoint);
+
+    /**
+     * @brief Register a standby memory segment during promote.
+     *        MEMORY segment data cannot be recovered (memory is volatile),
+     *        so this creates a dummy segment marked as NEEDS_REBUILD.
+     *        The segment is added to mounted_segments_ with a DummyBufferAllocator.
+     */
+    ErrorCode RegisterStandbyMemorySegment(const StandbySegmentInfo& info);
 
     /**
      * @brief Re-mount a segment. To avoid infinite remount trying, only the
@@ -313,6 +330,8 @@ class SegmentManager {
     std::unordered_map<UUID, std::shared_ptr<LocalDiskSegment>,
                        boost::hash<UUID>>
         client_local_disk_segment_;  // client_id -> local_disk_segment
+    std::unordered_map<std::string, UUID>
+        endpoint_to_client_id_;  // transport_endpoint -> client_id (for DISK segments)
 
     friend class ScopedSegmentAccess;
     friend class SegmentTest;        // for unit tests

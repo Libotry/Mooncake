@@ -109,6 +109,35 @@ class BufferAllocatorBase {
 };
 
 /**
+ * A minimal allocator implementation used only to keep AllocatedBuffer handles
+ * "valid" after standby promotion. It does NOT own memory.
+ * This is used for MEMORY segments that cannot be recovered after promote,
+ * allowing proper error handling instead of immediate failures.
+ */
+class DummyBufferAllocator final : public BufferAllocatorBase {
+   public:
+    DummyBufferAllocator(std::string segment_name, std::string transport_endpoint)
+        : segment_name_(std::move(segment_name)),
+          transport_endpoint_(std::move(transport_endpoint)) {}
+
+    std::unique_ptr<AllocatedBuffer> allocate(size_t /*size*/) override {
+        return nullptr;  // Cannot allocate - memory is not recoverable
+    }
+    void deallocate(AllocatedBuffer* /*handle*/) override {
+        // no-op: we don't own memory
+    }
+    size_t capacity() const override { return kAllocatorUnknownFreeSpace; }
+    size_t size() const override { return 0; }
+    std::string getSegmentName() const override { return segment_name_; }
+    std::string getTransportEndpoint() const override { return transport_endpoint_; }
+    size_t getLargestFreeRegion() const override { return kAllocatorUnknownFreeSpace; }
+
+   private:
+    std::string segment_name_;
+    std::string transport_endpoint_;
+};
+
+/**
  * CachelibBufferAllocator manages memory allocation using CacheLib's slab
  * allocation strategy.
  *

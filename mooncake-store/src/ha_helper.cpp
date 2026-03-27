@@ -230,17 +230,18 @@ int MasterServiceSupervisor::Start() {
         mv_helper.ElectLeader(config_.local_hostname, view_version, lease_id);
 
         // If we were running as Standby, finalize catch-up and snapshot metadata now.
-        std::vector<std::pair<std::string, StandbyObjectMetadata>> standby_snapshot;
+        StandbySnapshot standby_snapshot;
         uint64_t standby_last_seq_id = 0;
 #ifdef STORE_USE_ETCD
         if (had_standby && standby_service_ && standby_running_.load()) {
             LOG(INFO) << "Finalizing standby state for promotion...";
             standby_service_->Promote();  // does final catch-up sync + stops watcher
             standby_last_seq_id = standby_service_->GetLatestAppliedSequenceId();
-            standby_service_->ExportMetadataSnapshot(standby_snapshot);
+            standby_snapshot = standby_service_->ExportMetadataSnapshot();
             // We are now leader; standby service is no longer needed.
             StopStandbyService();
-            LOG(INFO) << "Standby snapshot ready: keys=" << standby_snapshot.size()
+            LOG(INFO) << "Standby snapshot ready: keys=" << standby_snapshot.objects.size()
+                      << ", segments=" << standby_snapshot.segments.size()
                       << ", last_seq_id=" << standby_last_seq_id;
         }
 #endif
@@ -264,8 +265,10 @@ int MasterServiceSupervisor::Start() {
 
         // Restore from promoted standby snapshot if available.
 #ifdef STORE_USE_ETCD
-        if (standby_last_seq_id > 0 || !standby_snapshot.empty()) {
-            wrapped_master_service.RestoreFromStandby(standby_snapshot, standby_last_seq_id);
+        if (standby_last_seq_id > 0 || !standby_snapshot.objects.empty()) {
+            wrapped_master_service.RestoreFromStandby(standby_snapshot.objects,
+                                                     standby_last_seq_id,
+                                                     standby_snapshot.segments);
         }
 #endif
 
